@@ -24,7 +24,12 @@ from a2a.server.routes import (
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.utils import TransportProtocol
 
-from common import WRITER_AGENT_HOST, WRITER_AGENT_PORT, setup_logging
+from common import (
+    WRITER_AGENT_BIND,
+    WRITER_AGENT_HOST,
+    WRITER_AGENT_PORT,
+    setup_logging,
+)
 from writer_agent.agent import write_report
 
 logger = logging.getLogger("writer.a2a")
@@ -125,5 +130,5 @@ if __name__ == "__main__":
         "(card at /.well-known/agent-card.json)",
         WRITER_AGENT_HOST, WRITER_AGENT_PORT,
     )
-    uvicorn.run(build_app(), host=WRITER_AGENT_HOST, port=WRITER_AGENT_PORT,
+    uvicorn.run(build_app(), host=WRITER_AGENT_BIND, port=WRITER_AGENT_PORT,
                 log_level="warning")
