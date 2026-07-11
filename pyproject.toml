@@ -1,0 +1,17 @@
+[project]
+name = "a2a-interop-demo"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk>=1.1.0",
+    "anthropic>=0.116.0",
+    "fastapi>=0.139.0",
+    "httpx>=0.28.1",
+    "langchain-anthropic>=1.4.8",
+    "langchain-nvidia-ai-endpoints>=1.4.3",
+    "langgraph>=1.2.9",
+    "mcp>=1.28.1",
+    "pydantic-ai-slim[anthropic,openai]>=2.9.0",
+    "python-dotenv>=1.2.2",
+    "uvicorn>=0.51.0",
+]
