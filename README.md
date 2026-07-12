@@ -55,6 +55,8 @@ Everything is opt-in via env vars (all combinable, all with offline fallbacks):
 | `A2A_CACHE=1` | semantic cache — repeat topics cost $0 and skip all agents |
 | `A2A_API_KEY=...` | API-key auth on A2A calls, declared in the Agent Card |
 | `A2A_DEMO_OFFLINE=1` | force deterministic zero-credential mode (what CI runs) |
+| `A2A_GUARD=off` | disable prompt-injection guard (red-team harness toggles this) |
+| `A2A_BANDIT_EPSILON=0.15` | exploration rate for cost-quality bandit router |
 
 LLM keys (gitignored `.env`): `ANTHROPIC_API_KEY` → Claude;
 `NVIDIA_API_KEY` → GLM-5.2 via NIM (all three frameworks reach it three
@@ -99,6 +101,13 @@ build fails.
   append-only audit log with a findings hash.
 - **AuthN**: Agent Card publicly declares an `X-API-Key` scheme; middleware
   401s unauthenticated RPCs.
+- **Injection guard**: every MCP search result is screened for 8 categories
+  of indirect prompt injection (sentence-level neutralization + spotlighting)
+  before reaching any LLM. Red-team validated: 100% ASR reduction, 0 false
+  positives on a 20-attack corpus. See [SECURITY.md](SECURITY.md).
+- **Bandit model router**: epsilon-greedy bandit chooses between model tiers
+  (strong vs cheap) based on cumulative critic scores; sqlite-persistent
+  across runs. Emits cost-quality frontier data for analysis.
 
 ## Observability: one trace, five services, two protocols
 
@@ -121,21 +130,25 @@ history.
 ## Testing
 
 ```bash
-uv run pytest tests/ -q     # 20 tests, all offline-deterministic
+uv run pytest tests/ -q     # 47 tests, all offline-deterministic
 ```
 
 e2e lifecycle ordering · single-trace assertion · eval regression gate ·
 chaos/retry/breaker · budget kill switch · auth · semantic cache · registry
 routing · reflection loop · negotiation (same-task resume) · HITL
-approve/reject+audit · dashboard. CI also builds the Docker image and runs
-the compose smoke test.
+approve/reject+audit · dashboard · injection guard (17 tests) · bandit
+router (10 tests). CI also builds the Docker image and runs the compose
+smoke test.
 
 ## Repo layout
 
 ```
 ├── run_demo.py               # CLI + service orchestration (boots the stack)
 ├── common/                   # config, logging, tracing, report schema,
-│                             #   costs, resilience, cache, audit, events
+│   ├── bandit.py             #   epsilon-greedy cost-quality model router
+│   ├── cache.py              #   semantic cache (cosine ≥ 0.9, sqlite)
+│   ├── guard.py              #   prompt-injection defense (8 patterns)
+│   └── ...                   #   costs, resilience, audit, events
 ├── mcp_server/search_server.py   # MCP stdio server: web_search
 ├── research_agent/           # LangGraph: search → synthesize → delegate → review
 ├── writer_agent/             # Pydantic AI + A2A server (:9001)
@@ -143,7 +156,10 @@ the compose smoke test.
 ├── registry/                 # agent registry + semantic routing (:9100)
 ├── dashboard/                # live SSE event dashboard (:9200)
 ├── evals/run_evals.py        # N-run harness: reliability + quality + judge
-├── tests/                    # 20 offline-deterministic tests
+├── benchmarks/               # A2A protocol microbenchmark
+├── redteam/                  # injection attack corpus + ASR harness
+├── tests/                    # 47 offline-deterministic tests
+├── SECURITY.md               # threat model, defense layers, red-team results
 └── FAILURE_MODES.md          # failure-mode table with observed traces
 ```
 
@@ -154,11 +170,21 @@ SDK** · **a2a-sdk 1.x** (protobuf-typed, JSON-RPC) · **MCP SDK** (FastMCP,
 stdio) · Tavily · **OpenTelemetry + OpenInference + Arize Phoenix** ·
 FastAPI · Docker + GitHub Actions
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for the threat model, defense layers, and
+red-team validation results.
+
+## Protocol overhead
+
+The A2A JSON-RPC protocol adds ~2.76x latency over direct in-process calls
+(offline FunctionModel, measured with `benchmarks/a2a_overhead.py`). This is
+the cost of typed message serialization, HTTP transport, and Agent Card
+discovery — worthwhile for the interop and discoverability guarantees.
+
 ## Next steps
 
 - A2A conformance/fuzzing test kit (lifecycle-order violations, malformed
   protos, mid-stream disconnects) run against public A2A implementations
-- Indirect prompt-injection red-team at the MCP boundary with measured
-  attack-success-rate before/after defenses
-- Cost-quality bandit router across cheap/strong models using judge scores
 - Polyglot mesh: a writer in TypeScript (a2a-js) on the same registry
+- Kubernetes deploy with per-agent HPA

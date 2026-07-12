@@ -73,7 +73,7 @@ discover_writer = discover_agent
 
 async def delegate_report(
     card: ty.AgentCard, topic: str, findings: str, sources: list[dict],
-    feedback: str | None = None,
+    feedback: str | None = None, model_tier: str | None = None,
 ) -> tuple[str, dict | None]:
     """Send the writing task to the Writer Agent over A2A, with bounded
     retries behind a circuit breaker. Returns the report text plus the
@@ -82,6 +82,8 @@ async def delegate_report(
         f"Topic: {topic}\n\nFindings:\n{findings}\n\n"
         f"Sources:\n{format_sources(sources)}"
     )
+    if model_tier:
+        task_text += f"\n\n[Model tier hint: {model_tier}]"
     if feedback:
         task_text += f"\n\nReviewer feedback to address:\n{feedback}"
     return await with_retries(
