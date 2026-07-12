@@ -32,8 +32,10 @@ from common import (
     WRITER_AGENT_PORT,
     setup_logging,
 )
+from common import WRITER_AGENT_URL
 from common.report import parse_report, parse_sources
 from common.tracing import extract_context, setup_tracing, tracer
+from registry.client import self_register
 from writer_agent.agent import write_report
 
 logger = logging.getLogger("writer.a2a")
@@ -202,6 +204,13 @@ def build_app() -> FastAPI:
         FastAPIInstrumentor.instrument_app(app)
     except ImportError:
         pass
+
+    @app.on_event("startup")
+    async def register() -> None:
+        import asyncio
+
+        asyncio.get_running_loop().create_task(self_register(WRITER_AGENT_URL))
+
     return app
 
 

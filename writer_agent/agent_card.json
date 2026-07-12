@@ -3,7 +3,7 @@
   "description": "Turns raw research findings into a polished ~300-word report. Built with Pydantic AI, exposed over the A2A protocol.",
   "supportedInterfaces": [
     {
-      "url": "http://127.0.0.1:9118/",
+      "url": "http://127.0.0.1:9131/",
       "protocolBinding": "JSONRPC"
     }
   ],

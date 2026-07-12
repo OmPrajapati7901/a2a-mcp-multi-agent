@@ -10,8 +10,11 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+import os
+
 from common import (
     CLAUDE_MODEL,
+    CRITIC_AGENT_URL,
     NVIDIA_MODEL,
     WRITER_AGENT_URL,
     have_anthropic,
@@ -19,8 +22,19 @@ from common import (
 )
 from common.costs import Ledger, estimate_tokens
 from common.tracing import tracer
-from research_agent.a2a_client import delegate_report, discover_writer
+from registry.client import find_agent
+from research_agent.a2a_client import (
+    delegate_report,
+    delegate_review,
+    discover_agent,
+)
 from research_agent.mcp_client import mcp_web_search
+
+MAX_REVISION_ROUNDS = 1
+
+
+def critic_enabled() -> bool:
+    return bool(os.environ.get("A2A_CRITIC"))
 
 logger = logging.getLogger("research.agent")
 
@@ -43,6 +57,9 @@ class ResearchState(TypedDict, total=False):
     structured_report: dict | None
     timings: dict[str, float]
     ledger: Ledger
+    critic_verdict: str
+    critic_feedback: str
+    revision_rounds: int
 
 
 def _mark(state: ResearchState, phase: str, start: float) -> dict[str, float]:
@@ -107,10 +124,20 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
     # Kill switch: stop before spending more, not after.
     state["ledger"].check_budget("delegate to the Writer Agent")
-    logger.info("node=delegate: discovering Writer Agent at %s", WRITER_AGENT_URL)
-    card = await discover_writer(WRITER_AGENT_URL)
+    # Semantic routing when a registry is configured; static URL otherwise.
+    writer_url = await find_agent(
+        "turn research findings into a polished written report",
+        WRITER_AGENT_URL,
+    )
+    logger.info("node=delegate: discovering Writer Agent at %s", writer_url)
+    card = await discover_agent(writer_url)
+    feedback = state.get("critic_feedback") or None
+    if feedback:
+        logger.info("node=delegate: REVISION round %d with critic feedback",
+                    state.get("revision_rounds", 0))
     report, structured = await delegate_report(
-        card, state["topic"], state["findings"], state["raw_results"]
+        card, state["topic"], state["findings"], state["raw_results"],
+        feedback=feedback,
     )
     usage = (structured or {}).get("usage") or {}
     state["ledger"].add(
@@ -125,15 +152,61 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     }
 
 
+async def review_node(state: ResearchState) -> ResearchState:
+    """Reflection: a Critic Agent on a third framework (OpenAI Agents SDK)
+    reviews the report over A2A; a revise verdict loops back to the writer
+    with feedback, bounded by MAX_REVISION_ROUNDS."""
+    t0 = time.perf_counter()
+    critic_url = await find_agent(
+        "review and critique a research report for quality and citations",
+        CRITIC_AGENT_URL,
+    )
+    logger.info("node=review: discovering Critic Agent at %s", critic_url)
+    card = await discover_agent(critic_url)
+    review = await delegate_review(card, state["report"], state["findings"])
+    usage = review.get("usage") or {}
+    state["ledger"].add(
+        "critic-agent",
+        usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+        estimated=bool(usage.get("estimated")),
+    )
+    logger.info("node=review: critic verdict=%s", review["verdict"])
+    timings = _mark(state, f"review_{state.get('revision_rounds', 0)}_s", t0)
+    return {
+        "critic_verdict": review["verdict"],
+        "critic_feedback": review.get("feedback", ""),
+        "revision_rounds": state.get("revision_rounds", 0) + 1,
+        "timings": timings,
+    }
+
+
+def _after_review(state: ResearchState) -> str:
+    if (state["critic_verdict"] == "revise"
+            and state["revision_rounds"] <= MAX_REVISION_ROUNDS):
+        logger.info("reflection: revising report (round %d/%d)",
+                    state["revision_rounds"], MAX_REVISION_ROUNDS)
+        return "delegate"
+    if state["critic_verdict"] == "revise":
+        logger.warning("reflection: revision budget exhausted — "
+                       "shipping last draft")
+    return END
+
+
+def _after_delegate(state: ResearchState) -> str:
+    return "review" if critic_enabled() else END
+
+
 def build_graph():
     g = StateGraph(ResearchState)
     g.add_node("search", search_node)
     g.add_node("synthesize", synthesize_node)
     g.add_node("delegate", delegate_node)
+    g.add_node("review", review_node)
     g.add_edge(START, "search")
     g.add_edge("search", "synthesize")
     g.add_edge("synthesize", "delegate")
-    g.add_edge("delegate", END)
+    g.add_conditional_edges("delegate", _after_delegate, ["review", END])
+    g.add_conditional_edges("review", _after_review, ["delegate", END])
     return g.compile()
 
 
