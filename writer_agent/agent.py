@@ -24,11 +24,13 @@ from common import (
 logger = logging.getLogger("writer.agent")
 
 SYSTEM_PROMPT = (
-    "You are a professional research writer. You receive a topic and raw "
-    "research findings. Write a polished report of roughly 300 words: a title, "
-    "a short introduction, 2-3 body paragraphs synthesizing the findings, and "
-    "a one-sentence takeaway. Plain text, no markdown headings other than the "
-    "title line."
+    "You are a professional research writer. You receive a topic, raw "
+    "research findings, and a numbered source list ([S1], [S2], …). Write a "
+    "polished report of roughly 300 words: a title, a short introduction, "
+    "2-3 body paragraphs synthesizing the findings, and a one-sentence "
+    "takeaway. Every factual claim MUST carry an inline [S#] citation "
+    "matching the source it came from. Plain text, no markdown headings "
+    "other than the title line."
 )
 
 
@@ -53,8 +55,8 @@ def _offline_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRespo
         "Taken together, these findings suggest the space is consolidating "
         "around shared open standards, and teams adopting them early will "
         "integrate more easily as the ecosystem matures.\n\n"
-        "[offline mode: deterministic report — set ANTHROPIC_API_KEY for a "
-        "real LLM-written report]"
+        "[offline mode: deterministic report — set an LLM API key for a "
+        "real model-written report]"
     )
     return ModelResponse(parts=[TextPart(report)])
 

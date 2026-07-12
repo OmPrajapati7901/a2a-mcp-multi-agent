@@ -10,7 +10,9 @@ import httpx
 
 import a2a.types as ty
 from a2a.client import A2ACardResolver, ClientConfig, create_client
-from a2a.helpers import get_artifact_text, new_text_message
+from a2a.helpers import get_artifact_text, get_data_parts, new_text_message
+
+from common.report import format_sources
 
 logger = logging.getLogger("research.a2a")
 
@@ -31,9 +33,15 @@ async def discover_writer(base_url: str) -> ty.AgentCard:
     return card
 
 
-async def delegate_report(card: ty.AgentCard, topic: str, findings: str) -> str:
-    """Send the writing task to the Writer Agent over A2A and collect the report."""
-    task_text = f"Topic: {topic}\n\nFindings:\n{findings}"
+async def delegate_report(
+    card: ty.AgentCard, topic: str, findings: str, sources: list[dict]
+) -> tuple[str, dict | None]:
+    """Send the writing task to the Writer Agent over A2A. Returns the report
+    text plus the structured report (citations) from the artifact's data part."""
+    task_text = (
+        f"Topic: {topic}\n\nFindings:\n{findings}\n\n"
+        f"Sources:\n{format_sources(sources)}"
+    )
     http = httpx.AsyncClient(timeout=DELEGATION_TIMEOUT)
     client = await create_client(card, ClientConfig(httpx_client=http))
     logger.info(
@@ -41,6 +49,7 @@ async def delegate_report(card: ty.AgentCard, topic: str, findings: str) -> str:
         card.name, len(task_text),
     )
     report_chunks: list[str] = []
+    structured: dict | None = None
     task_id = None
     try:
         req = ty.SendMessageRequest(
@@ -59,9 +68,13 @@ async def delegate_report(card: ty.AgentCard, topic: str, findings: str) -> str:
             elif kind == "artifact_update":
                 artifact = resp.artifact_update.artifact
                 report_chunks.append(get_artifact_text(artifact))
+                data_parts = get_data_parts(artifact.parts)
+                if data_parts:
+                    structured = data_parts[0]
                 logger.info(
-                    "A2A artifact received: %r (%d chars)",
+                    "A2A artifact received: %r (%d chars, %d citations)",
                     artifact.name, len(report_chunks[-1]),
+                    len((structured or {}).get("citations", [])),
                 )
     finally:
         await client.close()
@@ -71,4 +84,4 @@ async def delegate_report(card: ty.AgentCard, topic: str, findings: str) -> str:
         raise RuntimeError("Writer Agent returned no report artifact")
     report = "\n".join(report_chunks)
     logger.info("A2A HANDOFF complete: report received (%d chars)", len(report))
-    return report
+    return report, structured

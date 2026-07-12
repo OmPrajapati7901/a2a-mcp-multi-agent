@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from google.protobuf.json_format import MessageToDict
 
 import a2a.types as ty
-from a2a.helpers import new_task_from_user_message
+from a2a.helpers import new_data_part, new_task_from_user_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -30,6 +30,7 @@ from common import (
     WRITER_AGENT_PORT,
     setup_logging,
 )
+from common.report import parse_report, parse_sources
 from writer_agent.agent import write_report
 
 logger = logging.getLogger("writer.a2a")
@@ -91,11 +92,16 @@ class WriterExecutor(AgentExecutor):
             await updater.failed()
             return
 
-        await updater.add_artifact([ty.Part(text=report)], name="report")
+        structured = parse_report(report, parse_sources(task_text))
+        await updater.add_artifact(
+            [ty.Part(text=report), new_data_part(structured.model_dump())],
+            name="report",
+        )
         await updater.complete()
         logger.info(
-            "A2A task completed: task_id=%s report=%d chars",
+            "A2A task completed: task_id=%s report=%d chars, %d/%d sources cited",
             context.task_id, len(report),
+            len(structured.citations), structured.sources_available,
         )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:

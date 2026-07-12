@@ -84,16 +84,24 @@ def main() -> None:
     total_s = round(time.perf_counter() - t0, 2)
     timings = state["timings"]
 
+    structured = state.get("structured_report") or {}
+    citations = structured.get("citations", [])
+
     print("\n" + "=" * 72)
     print("FINAL REPORT")
     print("=" * 72)
     print(state["report"])
+    if citations:
+        print("\nSources cited:")
+        for c in citations:
+            print(f"  [S{int(c['sid'])}] {c['title']} — {c['url']}")
     print("=" * 72)
     print(
         f"metrics: total={total_s}s | search={timings.get('search_s')}s | "
         f"synthesis={timings.get('synthesis_s')}s | "
         f"a2a_delegation={timings.get('delegation_s')}s | "
-        f"search_results={len(state['raw_results'])}"
+        f"search_results={len(state['raw_results'])} | "
+        f"citations={len(citations)}/{int(structured.get('sources_available', 0))}"
     )
 
 
