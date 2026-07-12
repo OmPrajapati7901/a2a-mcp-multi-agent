@@ -24,6 +24,7 @@ from common import (
 )
 from common.costs import Ledger, estimate_tokens
 from common.events import emit_event
+from common.guard import screen_results
 from common.tracing import tracer
 from common.report import format_sources
 from registry.client import find_agent
@@ -67,6 +68,7 @@ class ResearchState(TypedDict, total=False):
     structured_report: dict | None
     timings: dict[str, float]
     ledger: dict
+    guard_report: dict
     critic_verdict: str
     critic_feedback: str
     revision_rounds: int
@@ -84,8 +86,20 @@ async def search_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
     logger.info("node=search: querying MCP web_search for %r", state["topic"])
     results = await mcp_web_search(state["topic"], state.get("max_results", 5))
+    # Trust boundary: web content is attacker-controllable. Screen it for
+    # indirect prompt injection before it can reach the synthesis LLM.
+    results, guard_report = screen_results(results)
+    if guard_report["enabled"] and guard_report["flagged"]:
+        logger.warning("node=search: guard neutralized injection in %d/%d "
+                       "result(s), categories=%s",
+                       guard_report["flagged"], len(results),
+                       guard_report["categories"])
+        emit_event("research-agent", "injection_blocked",
+                   flagged=guard_report["flagged"],
+                   categories=guard_report["categories"])
     emit_event("research-agent", "mcp_search_done", results=len(results))
-    return {"raw_results": results, "timings": _mark(state, "search_s", t0)}
+    return {"raw_results": results, "guard_report": guard_report,
+            "timings": _mark(state, "search_s", t0)}
 
 
 async def synthesize_node(state: ResearchState) -> ResearchState:
