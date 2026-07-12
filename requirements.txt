@@ -29,6 +29,8 @@ anyio==4.14.1
 [32m    #   openai[39m
 [32m    #   sse-starlette[39m
 [32m    #   starlette[39m
+asgiref==3.11.1
+[32m    # via opentelemetry-instrumentation-asgi[39m
 attrs==26.1.0
 [32m    # via[39m
 [32m    #   aiohttp[39m
@@ -48,6 +50,7 @@ click==8.4.2
 colorama==0.4.6 ; sys_platform == 'win32'
 [32m    # via[39m
 [32m    #   click[39m
+[32m    #   pytest[39m
 [32m    #   tqdm[39m
 cryptography==49.0.0
 [32m    # via[39m
@@ -78,6 +81,7 @@ googleapis-common-protos==1.75.0
 [32m    # via[39m
 [32m    #   a2a-sdk[39m
 [32m    #   google-api-core[39m
+[32m    #   opentelemetry-exporter-otlp-proto-http[39m
 griffelib==2.1.0
 [32m    # via pydantic-ai-slim[39m
 h11==0.16.0
@@ -113,6 +117,8 @@ idna==3.18
 [32m    #   httpx2[39m
 [32m    #   requests[39m
 [32m    #   yarl[39m
+iniconfig==2.3.0
+[32m    # via pytest[39m
 jiter==0.16.0
 [32m    # via[39m
 [32m    #   anthropic[39m
@@ -165,8 +171,58 @@ multidict==6.7.1
 [32m    #   yarl[39m
 openai==2.45.0
 [32m    # via pydantic-ai-slim[39m
+openinference-instrumentation==0.1.54
+[32m    # via openinference-instrumentation-langchain[39m
+openinference-instrumentation-langchain==0.1.67
+[32m    # via a2a-interop-demo[39m
+openinference-semantic-conventions==0.1.30
+[32m    # via[39m
+[32m    #   openinference-instrumentation[39m
+[32m    #   openinference-instrumentation-langchain[39m
 opentelemetry-api==1.43.0
-[32m    # via pydantic-ai-slim[39m
+[32m    # via[39m
+[32m    #   openinference-instrumentation[39m
+[32m    #   openinference-instrumentation-langchain[39m
+[32m    #   opentelemetry-exporter-otlp-proto-http[39m
+[32m    #   opentelemetry-instrumentation[39m
+[32m    #   opentelemetry-instrumentation-asgi[39m
+[32m    #   opentelemetry-instrumentation-fastapi[39m
+[32m    #   opentelemetry-sdk[39m
+[32m    #   opentelemetry-semantic-conventions[39m
+[32m    #   pydantic-ai-slim[39m
+opentelemetry-exporter-otlp-proto-common==1.43.0
+[32m    # via opentelemetry-exporter-otlp-proto-http[39m
+opentelemetry-exporter-otlp-proto-http==1.43.0
+[32m    # via a2a-interop-demo[39m
+opentelemetry-instrumentation==0.64b0
+[32m    # via[39m
+[32m    #   openinference-instrumentation-langchain[39m
+[32m    #   opentelemetry-instrumentation-asgi[39m
+[32m    #   opentelemetry-instrumentation-fastapi[39m
+opentelemetry-instrumentation-asgi==0.64b0
+[32m    # via opentelemetry-instrumentation-fastapi[39m
+opentelemetry-instrumentation-fastapi==0.64b0
+[32m    # via a2a-interop-demo[39m
+opentelemetry-proto==1.43.0
+[32m    # via[39m
+[32m    #   opentelemetry-exporter-otlp-proto-common[39m
+[32m    #   opentelemetry-exporter-otlp-proto-http[39m
+opentelemetry-sdk==1.43.0
+[32m    # via[39m
+[32m    #   a2a-interop-demo[39m
+[32m    #   openinference-instrumentation[39m
+[32m    #   opentelemetry-exporter-otlp-proto-http[39m
+opentelemetry-semantic-conventions==0.64b0
+[32m    # via[39m
+[32m    #   openinference-instrumentation-langchain[39m
+[32m    #   opentelemetry-instrumentation[39m
+[32m    #   opentelemetry-instrumentation-asgi[39m
+[32m    #   opentelemetry-instrumentation-fastapi[39m
+[32m    #   opentelemetry-sdk[39m
+opentelemetry-util-http==0.64b0
+[32m    # via[39m
+[32m    #   opentelemetry-instrumentation-asgi[39m
+[32m    #   opentelemetry-instrumentation-fastapi[39m
 orjson==3.11.9
 [32m    # via[39m
 [32m    #   langgraph-sdk[39m
@@ -178,6 +234,10 @@ packaging==26.2
 [32m    #   a2a-sdk[39m
 [32m    #   langchain-core[39m
 [32m    #   langsmith[39m
+[32m    #   opentelemetry-instrumentation[39m
+[32m    #   pytest[39m
+pluggy==1.6.0
+[32m    # via pytest[39m
 propcache==0.5.2
 [32m    # via[39m
 [32m    #   aiohttp[39m
@@ -189,6 +249,7 @@ protobuf==6.33.6
 [32m    #   a2a-sdk[39m
 [32m    #   google-api-core[39m
 [32m    #   googleapis-common-protos[39m
+[32m    #   opentelemetry-proto[39m
 [32m    #   proto-plus[39m
 pyasn1==0.6.4
 [32m    # via pyasn1-modules[39m
@@ -219,8 +280,11 @@ pydantic-graph==2.9.0
 [32m    # via pydantic-ai-slim[39m
 pydantic-settings==2.14.2
 [32m    # via mcp[39m
+pygments==2.20.0
+[32m    # via pytest[39m
 pyjwt==2.13.0
 [32m    # via mcp[39m
+pytest==9.1.1
 python-dotenv==1.2.2
 [32m    # via[39m
 [32m    #   a2a-interop-demo[39m
@@ -242,6 +306,7 @@ requests==2.34.2
 [32m    #   google-api-core[39m
 [32m    #   langchain-nvidia-ai-endpoints[39m
 [32m    #   langsmith[39m
+[32m    #   opentelemetry-exporter-otlp-proto-http[39m
 [32m    #   requests-toolbelt[39m
 [32m    #   tiktoken[39m
 requests-toolbelt==1.0.0
@@ -289,6 +354,9 @@ typing-extensions==4.16.0
 [32m    #   mcp[39m
 [32m    #   openai[39m
 [32m    #   opentelemetry-api[39m
+[32m    #   opentelemetry-exporter-otlp-proto-http[39m
+[32m    #   opentelemetry-sdk[39m
+[32m    #   opentelemetry-semantic-conventions[39m
 [32m    #   pydantic[39m
 [32m    #   pydantic-core[39m
 [32m    #   referencing[39m
@@ -316,8 +384,12 @@ websockets==15.0.1
 [32m    # via[39m
 [32m    #   langgraph-sdk[39m
 [32m    #   langsmith[39m
-wrapt==2.2.2 ; python_full_version < '3.13'
-[32m    # via aiologic[39m
+wrapt==2.2.2
+[32m    # via[39m
+[32m    #   aiologic[39m
+[32m    #   openinference-instrumentation[39m
+[32m    #   openinference-instrumentation-langchain[39m
+[32m    #   opentelemetry-instrumentation[39m
 xxhash==3.8.1
 [32m    # via[39m
 [32m    #   langgraph[39m

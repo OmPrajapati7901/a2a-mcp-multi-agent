@@ -17,6 +17,7 @@ from common import (
     have_anthropic,
     have_nvidia,
 )
+from common.tracing import tracer
 from research_agent.a2a_client import delegate_report, discover_writer
 from research_agent.mcp_client import mcp_web_search
 
@@ -25,8 +26,10 @@ logger = logging.getLogger("research.agent")
 SYNTHESIS_PROMPT = (
     "You are a research analyst. Distill the following web search results "
     "about {topic!r} into 3-6 concise bullet-point findings (facts, trends, "
-    "named tools/standards). Output only the bullets, one per line, each "
-    "starting with '- '.\n\nSearch results:\n{results}"
+    "named tools/standards). Each search result is numbered [S1], [S2], … — "
+    "every bullet MUST end with the [S#] marker(s) of the result(s) it came "
+    "from. Output only the bullets, one per line, each starting with '- '."
+    "\n\nSearch results:\n{results}"
 )
 
 
@@ -36,6 +39,7 @@ class ResearchState(TypedDict, total=False):
     raw_results: list[dict]
     findings: str
     report: str
+    structured_report: dict | None
     timings: dict[str, float]
 
 
@@ -55,7 +59,8 @@ async def search_node(state: ResearchState) -> ResearchState:
 async def synthesize_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
     results_text = "\n\n".join(
-        f"[{r['title']}]({r['url']})\n{r['content']}" for r in state["raw_results"]
+        f"[S{i}] {r['title']} ({r['url']})\n{r['content']}"
+        for i, r in enumerate(state["raw_results"], 1)
     )
     llm = None
     if have_anthropic():
@@ -77,7 +82,8 @@ async def synthesize_node(state: ResearchState) -> ResearchState:
     else:
         logger.info("node=synthesize: offline mode — formatting results as findings")
         findings = "\n".join(
-            f"- {r['content']} (source: {r['title']})" for r in state["raw_results"]
+            f"- {r['content']} [S{i}]"
+            for i, r in enumerate(state["raw_results"], 1)
         )
     logger.info("node=synthesize: %d findings lines", findings.count("- "))
     return {"findings": findings, "timings": _mark(state, "synthesis_s", t0)}
@@ -87,8 +93,14 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
     logger.info("node=delegate: discovering Writer Agent at %s", WRITER_AGENT_URL)
     card = await discover_writer(WRITER_AGENT_URL)
-    report = await delegate_report(card, state["topic"], state["findings"])
-    return {"report": report, "timings": _mark(state, "delegation_s", t0)}
+    report, structured = await delegate_report(
+        card, state["topic"], state["findings"], state["raw_results"]
+    )
+    return {
+        "report": report,
+        "structured_report": structured,
+        "timings": _mark(state, "delegation_s", t0),
+    }
 
 
 def build_graph():
@@ -106,8 +118,11 @@ def build_graph():
 async def run_research(topic: str, max_results: int = 5) -> ResearchState:
     graph = build_graph()
     logger.info("research pipeline start: topic=%r", topic)
-    final: ResearchState = await graph.ainvoke(
-        {"topic": topic, "max_results": max_results}
-    )
+    with tracer().start_as_current_span("research.pipeline") as span:
+        span.set_attribute("research.topic", topic)
+        final: ResearchState = await graph.ainvoke(
+            {"topic": topic, "max_results": max_results}
+        )
+        span.set_attribute("research.report_chars", len(final["report"]))
     logger.info("research pipeline done: timings=%s", final["timings"])
     return final

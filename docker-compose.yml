@@ -1,0 +1,29 @@
+services:
+  writer:
+    build: .
+    environment:
+      WRITER_AGENT_BIND: 0.0.0.0
+      WRITER_AGENT_HOST: writer   # hostname published in the Agent Card
+      A2A_DEMO_OFFLINE: ${A2A_DEMO_OFFLINE:-1}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9001/.well-known/agent-card.json')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  demo:
+    build: .
+    command: ["uv", "run", "--no-sync", "python", "run_demo.py", "Summarize recent developments in agent observability tools"]
+    environment:
+      WRITER_AGENT_URL: http://writer:9001
+      A2A_DEMO_OFFLINE: ${A2A_DEMO_OFFLINE:-1}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    depends_on:
+      writer:
+        condition: service_healthy

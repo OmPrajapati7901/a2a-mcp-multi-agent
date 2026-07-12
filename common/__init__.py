@@ -7,9 +7,17 @@ import sys
 import certifi
 from dotenv import load_dotenv
 
+
+def offline_forced() -> bool:
+    """A2A_DEMO_OFFLINE=1 forces the zero-credential deterministic mode, even
+    if keys exist in .env — used by CI and the eval gate for reproducibility."""
+    return bool(os.environ.get("A2A_DEMO_OFFLINE"))
+
+
 # Keys live in .env at the repo root (gitignored), so every process — demo CLI,
 # writer server subprocess, MCP server subprocess — picks them up on import.
-load_dotenv(pathlib.Path(__file__).parent.parent / ".env")
+if not offline_forced():
+    load_dotenv(pathlib.Path(__file__).parent.parent / ".env")
 
 # macOS framework Python ships without system CA certs wired up; aiohttp
 # (used by langchain-nvidia-ai-endpoints) needs this, httpx bundles certifi.
@@ -22,7 +30,10 @@ CLAUDE_MODEL = "claude-opus-4-8"
 NVIDIA_MODEL = "z-ai/glm-5.2"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
-WRITER_AGENT_HOST = "127.0.0.1"
+# Hostname other processes use to reach the writer (in Docker: the service
+# name); BIND is the interface the server listens on (in Docker: 0.0.0.0).
+WRITER_AGENT_HOST = os.environ.get("WRITER_AGENT_HOST", "127.0.0.1")
+WRITER_AGENT_BIND = os.environ.get("WRITER_AGENT_BIND", WRITER_AGENT_HOST)
 WRITER_AGENT_PORT = int(os.environ.get("WRITER_AGENT_PORT", "9001"))
 WRITER_AGENT_URL = os.environ.get(
     "WRITER_AGENT_URL", f"http://{WRITER_AGENT_HOST}:{WRITER_AGENT_PORT}"
@@ -30,15 +41,15 @@ WRITER_AGENT_URL = os.environ.get(
 
 
 def have_anthropic() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return not offline_forced() and bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def have_nvidia() -> bool:
-    return bool(os.environ.get("NVIDIA_API_KEY"))
+    return not offline_forced() and bool(os.environ.get("NVIDIA_API_KEY"))
 
 
 def have_tavily() -> bool:
-    return bool(os.environ.get("TAVILY_API_KEY"))
+    return not offline_forced() and bool(os.environ.get("TAVILY_API_KEY"))
 
 
 def setup_logging(stream=None) -> None:

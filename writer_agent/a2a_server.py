@@ -10,9 +10,10 @@ import pathlib
 import uvicorn
 from fastapi import FastAPI
 from google.protobuf.json_format import MessageToDict
+from opentelemetry.trace import SpanKind
 
 import a2a.types as ty
-from a2a.helpers import new_task_from_user_message
+from a2a.helpers import new_data_part, new_task_from_user_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -24,7 +25,14 @@ from a2a.server.routes import (
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.utils import TransportProtocol
 
-from common import WRITER_AGENT_HOST, WRITER_AGENT_PORT, setup_logging
+from common import (
+    WRITER_AGENT_BIND,
+    WRITER_AGENT_HOST,
+    WRITER_AGENT_PORT,
+    setup_logging,
+)
+from common.report import parse_report, parse_sources
+from common.tracing import extract_context, setup_tracing, tracer
 from writer_agent.agent import write_report
 
 logger = logging.getLogger("writer.a2a")
@@ -74,24 +82,38 @@ class WriterExecutor(AgentExecutor):
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.start_work()
 
-        task_text = context.get_user_input()
-        logger.info(
-            "A2A task received: task_id=%s context_id=%s input=%d chars",
-            context.task_id, context.context_id, len(task_text),
-        )
-        try:
-            report = await write_report(task_text)
-        except Exception:
-            logger.exception("writer failed for task %s", context.task_id)
-            await updater.failed()
-            return
+        # The caller's trace context arrives in the A2A message metadata, so
+        # this span (and the LLM spans under it) join the caller's trace.
+        meta = context.message.metadata
+        parent = extract_context({k: meta[k] for k in meta.fields})
+        with tracer().start_as_current_span(
+            "writer.execute_task", context=parent, kind=SpanKind.SERVER
+        ) as span:
+            span.set_attribute("a2a.task_id", context.task_id)
+            task_text = context.get_user_input()
+            logger.info(
+                "A2A task received: task_id=%s context_id=%s input=%d chars",
+                context.task_id, context.context_id, len(task_text),
+            )
+            try:
+                report = await write_report(task_text)
+            except Exception:
+                logger.exception("writer failed for task %s", context.task_id)
+                await updater.failed()
+                return
 
-        await updater.add_artifact([ty.Part(text=report)], name="report")
-        await updater.complete()
-        logger.info(
-            "A2A task completed: task_id=%s report=%d chars",
-            context.task_id, len(report),
-        )
+            structured = parse_report(report, parse_sources(task_text))
+            span.set_attribute("report.citations", len(structured.citations))
+            await updater.add_artifact(
+                [ty.Part(text=report), new_data_part(structured.model_dump())],
+                name="report",
+            )
+            await updater.complete()
+            logger.info(
+                "A2A task completed: task_id=%s report=%d chars, %d/%d sources cited",
+                context.task_id, len(report),
+                len(structured.citations), structured.sources_available,
+            )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
@@ -115,15 +137,22 @@ def build_app() -> FastAPI:
         agent_card_routes=create_agent_card_routes(card),
         jsonrpc_routes=create_jsonrpc_routes(handler, "/"),
     )
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+    except ImportError:
+        pass
     return app
 
 
 if __name__ == "__main__":
     setup_logging()
+    setup_tracing("writer-agent")
     logger.info(
         "starting Writer Agent A2A server on http://%s:%d "
         "(card at /.well-known/agent-card.json)",
         WRITER_AGENT_HOST, WRITER_AGENT_PORT,
     )
-    uvicorn.run(build_app(), host=WRITER_AGENT_HOST, port=WRITER_AGENT_PORT,
+    uvicorn.run(build_app(), host=WRITER_AGENT_BIND, port=WRITER_AGENT_PORT,
                 log_level="warning")
