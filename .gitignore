@@ -4,4 +4,7 @@ __pycache__/
 .python-version
 .env
 evals/results/
+evals/RESULTS.md
 .cache/
+.audit/
+.claude/

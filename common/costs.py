@@ -29,6 +29,19 @@ class Ledger:
         self.by_agent: dict[str, dict] = {}
         self.estimated = False
 
+    def to_dict(self) -> dict:
+        """Plain-dict form so the ledger can live in checkpointed graph
+        state (msgpack-serializable)."""
+        return {"by_agent": self.by_agent, "estimated": self.estimated}
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "Ledger":
+        ledger = cls()
+        if data:
+            ledger.by_agent = {k: dict(v) for k, v in data["by_agent"].items()}
+            ledger.estimated = bool(data["estimated"])
+        return ledger
+
     def add(self, agent: str, input_tokens: int, output_tokens: int,
             estimated: bool = False) -> None:
         entry = self.by_agent.setdefault(agent, {"input": 0, "output": 0})

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 
 import uvicorn
 from fastapi import FastAPI
@@ -14,7 +15,7 @@ from google.protobuf.json_format import MessageToDict
 from opentelemetry.trace import SpanKind
 
 import a2a.types as ty
-from a2a.helpers import new_data_part, new_task_from_user_message
+from a2a.helpers import new_data_part, new_task_from_user_message, new_text_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -32,8 +33,11 @@ from common import (
     WRITER_AGENT_PORT,
     setup_logging,
 )
+from common import WRITER_AGENT_URL
+from common.events import emit_event
 from common.report import parse_report, parse_sources
 from common.tracing import extract_context, setup_tracing, tracer
+from registry.client import self_register
 from writer_agent.agent import write_report
 
 logger = logging.getLogger("writer.a2a")
@@ -95,7 +99,8 @@ class WriterExecutor(AgentExecutor):
         self._chaos_failures_left = int(os.environ.get("A2A_CHAOS_FAIL_N", "0"))
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        if not context.current_task:
+        is_continuation = context.current_task is not None
+        if not is_continuation:
             await event_queue.enqueue_event(new_task_from_user_message(context.message))
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.start_work()
@@ -118,9 +123,28 @@ class WriterExecutor(AgentExecutor):
                 return
             task_text = context.get_user_input()
             logger.info(
-                "A2A task received: task_id=%s context_id=%s input=%d chars",
+                "A2A task %s: task_id=%s context_id=%s input=%d chars",
+                "resumed with new input" if is_continuation else "received",
                 context.task_id, context.context_id, len(task_text),
             )
+
+            # Multi-turn negotiation: on the first message only, pause the
+            # task if the findings look too thin to write a decent report.
+            min_findings = int(os.environ.get("A2A_MIN_FINDINGS", "0"))
+            if min_findings and not is_continuation:
+                n_findings = len(re.findall(r"^- ", task_text, flags=re.MULTILINE))
+                if n_findings < min_findings:
+                    logger.info(
+                        "A2A NEGOTIATION: pausing task %s — %d findings < %d "
+                        "required (TASK_STATE_INPUT_REQUIRED)",
+                        context.task_id, n_findings, min_findings,
+                    )
+                    await updater.requires_input(new_text_message(
+                        f"Findings too thin: got {n_findings}, need at least "
+                        f"{min_findings}. Send more findings, or confirm these "
+                        "are all available sources."
+                    ))
+                    return
             artifact_id = f"report-{context.task_id}"
             chunks_sent = 0
 
@@ -151,6 +175,9 @@ class WriterExecutor(AgentExecutor):
             )
             logger.info("A2A artifact streamed in %d chunk(s)", chunks_sent + 1)
             await updater.complete()
+            emit_event("writer-agent", "task_completed",
+                       task_id=context.task_id, chars=len(report),
+                       citations=len(structured.citations))
             logger.info(
                 "A2A task completed: task_id=%s report=%d chars, %d/%d sources cited",
                 context.task_id, len(report),
@@ -165,8 +192,12 @@ class WriterExecutor(AgentExecutor):
 def build_app() -> FastAPI:
     card = build_agent_card()
 
-    card_path = pathlib.Path(__file__).parent / "agent_card.json"
-    card_path.write_text(json.dumps(MessageToDict(card), indent=2) + "\n")
+    # Refresh the committed card snapshot only when running the canonical
+    # config (default port 9001). Tests bind random ports and must not churn
+    # the tracked file.
+    if WRITER_AGENT_PORT == 9001 and not os.environ.get("A2A_API_KEY"):
+        card_path = pathlib.Path(__file__).parent / "agent_card.json"
+        card_path.write_text(json.dumps(MessageToDict(card), indent=2) + "\n")
 
     handler = DefaultRequestHandler(
         agent_executor=WriterExecutor(),
@@ -202,6 +233,13 @@ def build_app() -> FastAPI:
         FastAPIInstrumentor.instrument_app(app)
     except ImportError:
         pass
+
+    @app.on_event("startup")
+    async def register() -> None:
+        import asyncio
+
+        asyncio.get_running_loop().create_task(self_register(WRITER_AGENT_URL))
+
     return app
 
 

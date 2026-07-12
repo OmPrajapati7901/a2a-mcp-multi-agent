@@ -39,6 +39,18 @@ WRITER_AGENT_URL = os.environ.get(
     "WRITER_AGENT_URL", f"http://{WRITER_AGENT_HOST}:{WRITER_AGENT_PORT}"
 )
 
+CRITIC_AGENT_HOST = os.environ.get("CRITIC_AGENT_HOST", "127.0.0.1")
+CRITIC_AGENT_BIND = os.environ.get("CRITIC_AGENT_BIND", CRITIC_AGENT_HOST)
+CRITIC_AGENT_PORT = int(os.environ.get("CRITIC_AGENT_PORT", "9002"))
+CRITIC_AGENT_URL = os.environ.get(
+    "CRITIC_AGENT_URL", f"http://{CRITIC_AGENT_HOST}:{CRITIC_AGENT_PORT}"
+)
+
+
+def registry_url() -> str | None:
+    """Registry is opt-in: set A2A_REGISTRY_URL to enable dynamic discovery."""
+    return os.environ.get("A2A_REGISTRY_URL") or None
+
 
 def have_anthropic() -> bool:
     return not offline_forced() and bool(os.environ.get("ANTHROPIC_API_KEY"))

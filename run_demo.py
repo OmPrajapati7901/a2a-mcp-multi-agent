@@ -16,7 +16,10 @@ import time
 
 import httpx
 
+import os
+
 from common import (
+    CRITIC_AGENT_URL,
     WRITER_AGENT_URL,
     have_anthropic,
     have_nvidia,
@@ -30,32 +33,65 @@ logger = logging.getLogger("demo")
 CARD_PATH = "/.well-known/agent-card.json"
 
 
-def writer_is_up() -> bool:
+def _is_up(health_url: str) -> bool:
     try:
-        return httpx.get(WRITER_AGENT_URL + CARD_PATH, timeout=2).status_code == 200
+        return httpx.get(health_url, timeout=2).status_code == 200
     except httpx.HTTPError:
         return False
 
 
-def start_writer() -> subprocess.Popen | None:
-    if writer_is_up():
-        logger.info("Writer Agent already running at %s", WRITER_AGENT_URL)
+def start_service(label: str, module: str, health_url: str) -> subprocess.Popen | None:
+    """Spawn a service subprocess unless it's already running; wait healthy."""
+    if _is_up(health_url):
+        logger.info("%s already running (%s)", label, health_url)
         return None
-    logger.info("spawning Writer Agent A2A server (%s)", WRITER_AGENT_URL)
+    logger.info("spawning %s (%s)", label, health_url)
     proc = subprocess.Popen(
-        [sys.executable, "-m", "writer_agent.a2a_server"],
+        [sys.executable, "-m", module],
         stdout=sys.stderr, stderr=sys.stderr,
     )
     for _ in range(50):
-        if writer_is_up():
-            logger.info("Writer Agent is up; Agent Card served at %s%s",
-                        WRITER_AGENT_URL, CARD_PATH)
+        if _is_up(health_url):
+            logger.info("%s is up", label)
             return proc
         if proc.poll() is not None:
-            raise RuntimeError("Writer Agent server exited during startup")
+            raise RuntimeError(f"{label} exited during startup")
         time.sleep(0.2)
     proc.terminate()
-    raise RuntimeError(f"Writer Agent did not come up at {WRITER_AGENT_URL}")
+    raise RuntimeError(f"{label} did not come up at {health_url}")
+
+
+def start_writer() -> subprocess.Popen | None:
+    """Kept for the eval harness: boots just the writer."""
+    return start_service("Writer Agent", "writer_agent.a2a_server",
+                         WRITER_AGENT_URL + CARD_PATH)
+
+
+def start_stack() -> list[subprocess.Popen]:
+    """Boot the demo topology: registry (opt-in), writer, critic (opt-in).
+    The registry URL must be in the env before agents spawn so they
+    self-register."""
+    procs: list[subprocess.Popen] = []
+    if os.environ.get("A2A_DASHBOARD"):
+        dash_port = os.environ.get("DASHBOARD_PORT", "9200")
+        os.environ.setdefault("A2A_DASHBOARD_URL",
+                              f"http://127.0.0.1:{dash_port}")
+        procs.append(start_service(
+            "Dashboard", "dashboard.server",
+            os.environ["A2A_DASHBOARD_URL"] + "/events"))
+    if os.environ.get("A2A_REGISTRY"):
+        registry_port = os.environ.get("REGISTRY_PORT", "9100")
+        os.environ.setdefault("A2A_REGISTRY_URL",
+                              f"http://127.0.0.1:{registry_port}")
+        procs.append(start_service(
+            "Agent Registry", "registry.server",
+            os.environ["A2A_REGISTRY_URL"] + "/agents"))
+    procs.append(start_writer())
+    if os.environ.get("A2A_CRITIC"):
+        procs.append(start_service(
+            "Critic Agent", "critic_agent.a2a_server",
+            CRITIC_AGENT_URL + CARD_PATH))
+    return [p for p in procs if p is not None]
 
 
 def main() -> None:
@@ -85,15 +121,16 @@ def main() -> None:
                       cached, t0, cache_hit=True)
         return
 
-    writer_proc = start_writer()
+    procs = start_stack()
     try:
         from research_agent.agent import run_research
 
         state = asyncio.run(run_research(args.topic, args.max_results))
     finally:
-        if writer_proc is not None:
-            writer_proc.terminate()
-            writer_proc.wait(timeout=10)
+        for proc in procs:
+            proc.terminate()
+        for proc in procs:
+            proc.wait(timeout=10)
 
     if cache is not None:
         cache.store(args.topic, {
@@ -103,8 +140,10 @@ def main() -> None:
             "timings": state["timings"],
         })
 
+    from common.costs import Ledger
+
     _print_result(state["report"], state.get("structured_report") or {},
-                  state, t0, ledger=state["ledger"])
+                  state, t0, ledger=Ledger.from_dict(state["ledger"]))
 
 
 def _print_result(report: str, structured: dict, state: dict, t0: float,
