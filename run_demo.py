@@ -23,6 +23,7 @@ from common import (
     have_tavily,
     setup_logging,
 )
+from common.tracing import setup_tracing, tracing_enabled
 
 logger = logging.getLogger("demo")
 
@@ -65,6 +66,9 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging()
+    setup_tracing("research-agent")
+    if tracing_enabled():
+        logger.info("tracing: enabled (research-agent)")
     llm_mode = ("anthropic" if have_anthropic()
                 else "nvidia-nim" if have_nvidia() else "offline")
     logger.info("mode: llm=%s search=%s",

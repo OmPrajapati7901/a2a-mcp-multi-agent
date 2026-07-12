@@ -1,13 +1,13 @@
-# Eval results — 20260711-220748 (offline mode)
+# Eval results — 20260711-221356 (offline mode)
 
 | metric | value |
 |---|---|
 | runs | 3 |
 | success_rate | 1.0 |
-| latency_p50_s | 0.27 |
-| latency_p95_s | 0.29 |
+| latency_p50_s | 0.25 |
+| latency_p95_s | 0.27 |
 | mean_words | 149 |
 | words_in_bounds_rate | 1.0 |
 | mean_citation_coverage | 1.0 |
 
-Raw per-run data: `evals/results/20260711-220748-offline.json`
+Raw per-run data: `evals/results/20260711-221356-offline.json`

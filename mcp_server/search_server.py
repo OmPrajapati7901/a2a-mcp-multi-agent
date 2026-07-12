@@ -12,8 +12,10 @@ import os
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from opentelemetry.trace import SpanKind
 
 from common import setup_logging
+from common.tracing import extract_context, setup_tracing, tracer
 
 logger = logging.getLogger("mcp.web-search")
 
@@ -73,17 +75,25 @@ async def _tavily_search(query: str, max_results: int) -> list[dict]:
 @mcp.tool()
 async def web_search(query: str, max_results: int = 5) -> str:
     """Search the web and return a JSON list of {title, url, content} results."""
-    if os.environ.get("TAVILY_API_KEY"):
-        logger.info("web_search(tavily) query=%r max_results=%d", query, max_results)
-        results = await _tavily_search(query, max_results)
-    else:
-        logger.info("web_search(mock) query=%r max_results=%d", query, max_results)
-        results = MOCK_RESULTS[:max_results]
-    return json.dumps(results)
+    # The MCP client injected the trace context into our spawn environment.
+    parent = extract_context({"traceparent": os.environ.get("TRACEPARENT", "")})
+    with tracer().start_as_current_span(
+        "web_search.execute", context=parent, kind=SpanKind.SERVER
+    ) as span:
+        backend = "tavily" if os.environ.get("TAVILY_API_KEY") else "mock"
+        span.set_attribute("search.backend", backend)
+        logger.info("web_search(%s) query=%r max_results=%d",
+                    backend, query, max_results)
+        if backend == "tavily":
+            results = await _tavily_search(query, max_results)
+        else:
+            results = MOCK_RESULTS[:max_results]
+        return json.dumps(results)
 
 
 if __name__ == "__main__":
     setup_logging()
+    setup_tracing("mcp-web-search")
     logger.info(
         "starting MCP web-search server over stdio (backend=%s)",
         "tavily" if os.environ.get("TAVILY_API_KEY") else "mock",

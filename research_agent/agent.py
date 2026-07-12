@@ -17,6 +17,7 @@ from common import (
     have_anthropic,
     have_nvidia,
 )
+from common.tracing import tracer
 from research_agent.a2a_client import delegate_report, discover_writer
 from research_agent.mcp_client import mcp_web_search
 
@@ -117,8 +118,11 @@ def build_graph():
 async def run_research(topic: str, max_results: int = 5) -> ResearchState:
     graph = build_graph()
     logger.info("research pipeline start: topic=%r", topic)
-    final: ResearchState = await graph.ainvoke(
-        {"topic": topic, "max_results": max_results}
-    )
+    with tracer().start_as_current_span("research.pipeline") as span:
+        span.set_attribute("research.topic", topic)
+        final: ResearchState = await graph.ainvoke(
+            {"topic": topic, "max_results": max_results}
+        )
+        span.set_attribute("research.report_chars", len(final["report"]))
     logger.info("research pipeline done: timings=%s", final["timings"])
     return final
