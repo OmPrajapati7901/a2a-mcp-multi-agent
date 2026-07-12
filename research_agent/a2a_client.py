@@ -13,10 +13,17 @@ from a2a.client import A2ACardResolver, ClientConfig, create_client
 from a2a.helpers import get_artifact_text, get_data_parts, new_text_message
 from opentelemetry.trace import SpanKind
 
+from a2a.client.errors import A2AClientError
+
 from common.report import format_sources
+from common.resilience import CircuitBreaker, with_retries
 from common.tracing import inject_context, tracer
 
 logger = logging.getLogger("research.a2a")
+
+# One breaker per process for the writer: repeated delegation failures stop
+# further attempts instead of hammering a downed agent.
+WRITER_BREAKER = CircuitBreaker("writer-agent", failure_threshold=3, cooldown_s=30)
 
 # Report writing with a reasoning model can take minutes; don't let the
 # A2A stream time out under it.
@@ -44,8 +51,21 @@ async def discover_writer(base_url: str) -> ty.AgentCard:
 async def delegate_report(
     card: ty.AgentCard, topic: str, findings: str, sources: list[dict]
 ) -> tuple[str, dict | None]:
-    """Send the writing task to the Writer Agent over A2A. Returns the report
-    text plus the structured report (citations) from the artifact's data part."""
+    """Send the writing task to the Writer Agent over A2A, with bounded
+    retries behind a circuit breaker. Returns the report text plus the
+    structured report (citations) from the artifact's data part."""
+    return await with_retries(
+        lambda: _attempt_delegation(card, topic, findings, sources),
+        name="a2a.delegate(write_report)",
+        attempts=3,
+        retry_on=(A2AClientError, httpx.HTTPError, RuntimeError),
+        breaker=WRITER_BREAKER,
+    )
+
+
+async def _attempt_delegation(
+    card: ty.AgentCard, topic: str, findings: str, sources: list[dict]
+) -> tuple[str, dict | None]:
     task_text = (
         f"Topic: {topic}\n\nFindings:\n{findings}\n\n"
         f"Sources:\n{format_sources(sources)}"

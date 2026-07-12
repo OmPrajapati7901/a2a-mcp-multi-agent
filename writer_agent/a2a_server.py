@@ -5,6 +5,7 @@ delegation over A2A JSON-RPC. Run: `uv run python -m writer_agent.a2a_server`.
 """
 import json
 import logging
+import os
 import pathlib
 
 import uvicorn
@@ -76,6 +77,10 @@ def build_agent_card() -> ty.AgentCard:
 class WriterExecutor(AgentExecutor):
     """Bridges A2A task execution to the Pydantic AI writer agent."""
 
+    def __init__(self) -> None:
+        # Chaos injection for resilience tests: fail the first N tasks.
+        self._chaos_failures_left = int(os.environ.get("A2A_CHAOS_FAIL_N", "0"))
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if not context.current_task:
             await event_queue.enqueue_event(new_task_from_user_message(context.message))
@@ -90,6 +95,14 @@ class WriterExecutor(AgentExecutor):
             "writer.execute_task", context=parent, kind=SpanKind.SERVER
         ) as span:
             span.set_attribute("a2a.task_id", context.task_id)
+            if self._chaos_failures_left > 0:
+                self._chaos_failures_left -= 1
+                logger.warning(
+                    "CHAOS: injected failure for task %s (%d more to come)",
+                    context.task_id, self._chaos_failures_left,
+                )
+                await updater.failed()
+                return
             task_text = context.get_user_input()
             logger.info(
                 "A2A task received: task_id=%s context_id=%s input=%d chars",
