@@ -108,8 +108,20 @@ class WriterExecutor(AgentExecutor):
                 "A2A task received: task_id=%s context_id=%s input=%d chars",
                 context.task_id, context.context_id, len(task_text),
             )
+            artifact_id = f"report-{context.task_id}"
+            chunks_sent = 0
+
+            async def emit(chunk: str) -> None:
+                nonlocal chunks_sent
+                await updater.add_artifact(
+                    [ty.Part(text=chunk)],
+                    artifact_id=artifact_id, name="report",
+                    append=chunks_sent > 0,
+                )
+                chunks_sent += 1
+
             try:
-                report, usage = await write_report(task_text)
+                report, usage = await write_report(task_text, emit=emit)
             except Exception:
                 logger.exception("writer failed for task %s", context.task_id)
                 await updater.failed()
@@ -117,13 +129,14 @@ class WriterExecutor(AgentExecutor):
 
             structured = parse_report(report, parse_sources(task_text))
             span.set_attribute("report.citations", len(structured.citations))
+            # Final chunk: the structured report (citations + usage) as a
+            # data part appended to the same artifact.
             await updater.add_artifact(
-                [
-                    ty.Part(text=report),
-                    new_data_part(structured.model_dump() | {"usage": usage}),
-                ],
-                name="report",
+                [new_data_part(structured.model_dump() | {"usage": usage})],
+                artifact_id=artifact_id, name="report",
+                append=True, last_chunk=True,
             )
+            logger.info("A2A artifact streamed in %d chunk(s)", chunks_sent + 1)
             await updater.complete()
             logger.info(
                 "A2A task completed: task_id=%s report=%d chars, %d/%d sources cited",

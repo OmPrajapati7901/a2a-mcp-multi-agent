@@ -79,7 +79,8 @@ async def _attempt_delegation(
         "A2A HANDOFF: delegating 'write_report' to %r (%d chars of findings)",
         card.name, len(task_text),
     )
-    report_chunks: list[str] = []
+    report_text = ""
+    chunks_received = 0
     structured: dict | None = None
     task_id = None
     span_cm = tracer().start_as_current_span("a2a.delegate", kind=SpanKind.CLIENT)
@@ -104,22 +105,27 @@ async def _attempt_delegation(
                     if resp.status_update.status.state == ty.TaskState.TASK_STATE_FAILED:
                         raise RuntimeError(f"Writer Agent task {task_id} failed")
                 elif kind == "artifact_update":
-                    artifact = resp.artifact_update.artifact
-                    report_chunks.append(get_artifact_text(artifact))
-                    data_parts = get_data_parts(artifact.parts)
+                    ev = resp.artifact_update
+                    text = get_artifact_text(ev.artifact)
+                    report_text = report_text + text if ev.append else text
+                    chunks_received += 1
+                    data_parts = get_data_parts(ev.artifact.parts)
                     if data_parts:
                         structured = data_parts[0]
-                    logger.info(
-                        "A2A artifact received: %r (%d chars, %d citations)",
-                        artifact.name, len(report_chunks[-1]),
-                        len((structured or {}).get("citations", [])),
-                    )
+                    if ev.last_chunk or not ev.append:
+                        logger.info(
+                            "A2A artifact %s: %r (%d chars in %d chunk(s), "
+                            "%d citations)",
+                            "complete" if ev.last_chunk else "received",
+                            ev.artifact.name, len(report_text), chunks_received,
+                            len((structured or {}).get("citations", [])),
+                        )
     finally:
         await client.close()
         await http.aclose()
 
-    if not report_chunks:
+    if not report_text:
         raise RuntimeError("Writer Agent returned no report artifact")
-    report = "\n".join(report_chunks)
-    logger.info("A2A HANDOFF complete: report received (%d chars)", len(report))
-    return report, structured
+    logger.info("A2A HANDOFF complete: report received (%d chars)",
+                len(report_text))
+    return report_text, structured

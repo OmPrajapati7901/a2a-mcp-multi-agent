@@ -85,17 +85,44 @@ def build_writer_agent() -> Agent:
 
 _agent: Agent | None = None
 
+# Flush streamed text to the A2A artifact roughly per paragraph.
+STREAM_CHUNK_CHARS = 300
 
-async def write_report(task_text: str) -> tuple[str, dict]:
-    """Entry point used by the A2A executor: findings text in, report out,
-    plus this agent's token usage so the caller can attribute cost."""
+
+def _get_agent() -> Agent:
     global _agent
     if _agent is None:
         _agent = build_writer_agent()
-    result = await _agent.run(task_text)
-    usage = {
-        "input_tokens": result.usage.input_tokens or 0,
-        "output_tokens": result.usage.output_tokens or 0,
+    return _agent
+
+
+def _usage_dict(usage) -> dict:
+    return {
+        "input_tokens": usage.input_tokens or 0,
+        "output_tokens": usage.output_tokens or 0,
         "estimated": not have_anthropic() and not have_nvidia(),
     }
-    return result.output, usage
+
+
+async def write_report(task_text: str, emit=None) -> tuple[str, dict]:
+    """Entry point used by the A2A executor: findings text in, report out,
+    plus this agent's token usage so the caller can attribute cost.
+
+    When `emit` (async fn(chunk: str)) is given and a real model is in use,
+    the report is streamed to it in chunks as the model generates."""
+    agent = _get_agent()
+    if emit is not None and (have_anthropic() or have_nvidia()):
+        async with agent.run_stream(task_text) as result:
+            buffer = ""
+            async for delta in result.stream_text(delta=True):
+                buffer += delta
+                if len(buffer) >= STREAM_CHUNK_CHARS:
+                    await emit(buffer)
+                    buffer = ""
+            if buffer:
+                await emit(buffer)
+            return await result.get_output(), _usage_dict(result.usage)
+    result = await agent.run(task_text)
+    if emit is not None:
+        await emit(result.output)
+    return result.output, _usage_dict(result.usage)
