@@ -40,6 +40,19 @@ logger = logging.getLogger("writer.a2a")
 
 
 def build_agent_card() -> ty.AgentCard:
+    card = _base_card()
+    if os.environ.get("A2A_API_KEY"):
+        # Declare the scheme on the card so callers know how to authenticate.
+        card.security_schemes["api-key"].api_key_security_scheme.CopyFrom(
+            ty.APIKeySecurityScheme(
+                name="X-API-Key", location="header",
+                description="Static API key issued to trusted caller agents.",
+            )
+        )
+    return card
+
+
+def _base_card() -> ty.AgentCard:
     return ty.AgentCard(
         name="Writer Agent",
         description=(
@@ -161,6 +174,23 @@ def build_app() -> FastAPI:
         agent_card=card,
     )
     app = FastAPI(title="Writer Agent (A2A)")
+
+    api_key = os.environ.get("A2A_API_KEY")
+    if api_key:
+        from fastapi.responses import JSONResponse
+
+        @app.middleware("http")
+        async def require_api_key(request, call_next):
+            # The Agent Card stays public — that's how callers discover the
+            # required scheme; every A2A RPC needs the key.
+            if request.url.path.startswith("/.well-known"):
+                return await call_next(request)
+            if request.headers.get("x-api-key") != api_key:
+                logger.warning("A2A AUTH: rejected request to %s (bad/missing key)",
+                               request.url.path)
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=create_agent_card_routes(card),

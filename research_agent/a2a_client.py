@@ -5,6 +5,7 @@ Discovers the Writer Agent via its published Agent Card and delegates the
 the seam where LangGraph ends and Pydantic AI begins.
 """
 import logging
+import os
 
 import httpx
 
@@ -70,8 +71,13 @@ async def _attempt_delegation(
         f"Topic: {topic}\n\nFindings:\n{findings}\n\n"
         f"Sources:\n{format_sources(sources)}"
     )
+    headers = {}
+    if os.environ.get("A2A_API_KEY"):
+        # Card declares an api-key scheme (X-API-Key header); present it.
+        headers["X-API-Key"] = os.environ["A2A_API_KEY"]
     http = httpx.AsyncClient(
         timeout=DELEGATION_TIMEOUT,
+        headers=headers,
         event_hooks={"request": [_inject_trace_headers]},
     )
     client = await create_client(card, ClientConfig(httpx_client=http))
