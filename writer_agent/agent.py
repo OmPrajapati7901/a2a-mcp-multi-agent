@@ -36,7 +36,14 @@ SYSTEM_PROMPT = (
 
 def _offline_report(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
     """Deterministic stand-in model: composes a structured report from the
-    findings bullets in the prompt, without calling any LLM."""
+    findings bullets in the prompt, without calling any LLM.
+
+    Citations are derived from the well-formed `[S#] title — url` source
+    block in the prompt (which the guard never modifies — it only screens
+    result *content*), then woven one-per-bullet so inline `[S#]` markers
+    are always present regardless of how the synthesis bullets were shaped
+    or whether the injection guard wrapped their content.
+    """
     prompt = ""
     for part in messages[-1].parts:
         if hasattr(part, "content") and isinstance(part.content, str):
@@ -44,12 +51,48 @@ def _offline_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRespo
     topic_match = re.search(r"Topic:\s*(.+)", prompt)
     topic = topic_match.group(1).strip() if topic_match else "the requested topic"
     bullets = re.findall(r"^- (.+)$", prompt, flags=re.MULTILINE)
+    # [S#] → source id, from the unmodified sources block.
+    source_ids = [int(m) for m in re.findall(r"^\[S(\d+)\]\s", prompt, re.MULTILINE)]
 
-    body = " ".join(bullets) if bullets else prompt[:600]
+    # The guard's spotlighting wrapper (`<untrusted_search_result>…</…>`)
+    # surrounds the prose in each bullet. Extract the prose *from inside*
+    # the wrapper (rather than deleting the wrapper and losing everything).
+    # Also strip any trailing [S#] tag the synthesis bullet already carries —
+    # we re-tag from the sources block below for reliable citations.
+    _UNWRAP = re.compile(
+        r"<untrusted_search_result>"
+        r"(?:\([^)]*\)\s*)?"   # optional "(…instructions…) " preamble
+        r"(.*?)"               # the actual prose we want
+        r"</untrusted_search_result>",
+        re.DOTALL,
+    )
+
+    def _clean(b: str) -> str:
+        # If the bullet contains a spotlighting wrapper, pull out the prose.
+        m = _UNWRAP.search(b)
+        if m:
+            b = m.group(1)
+        # Drop any trailing [S#] so we can re-tag cleanly below.
+        b = re.sub(r"\s*\[S\d+\]\s*$", "", b).strip()
+        return re.sub(r"\s+", " ", b)
+
+    cleaned = [_clean(b) for b in bullets if _clean(b)]
+
+    if cleaned and source_ids:
+        # Pair each bullet with its matching source by position.
+        body = " ".join(
+            f"{b} [S{source_ids[i % len(source_ids)]}]"
+            for i, b in enumerate(cleaned)
+        )
+    elif cleaned:
+        body = " ".join(cleaned)
+    else:
+        body = prompt[:600]
+    n_threads = len(bullets) or len(source_ids) or "several"
     report = (
         f"{topic.title()}: A Brief Report\n\n"
         f"This report summarizes current findings on {topic}. "
-        f"The research surfaced {len(bullets) or 'several'} key threads, "
+        f"The research surfaced {n_threads} key threads, "
         "reviewed below.\n\n"
         f"{body}\n\n"
         "Taken together, these findings suggest the space is consolidating "
