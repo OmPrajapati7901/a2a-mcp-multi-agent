@@ -88,6 +88,7 @@ async def run_once(topic: str, judge: bool) -> dict:
         )
         row.update(
             success=True,
+            report_head=state["report"][:200],
             total_s=round(time.perf_counter() - t0, 2),
             words=_word_count(state["report"]),
             citation_coverage=round(n_cited / n_sources, 2) if n_sources else 0.0,

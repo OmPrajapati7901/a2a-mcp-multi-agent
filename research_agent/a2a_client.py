@@ -5,6 +5,7 @@ Discovers the Writer Agent via its published Agent Card and delegates the
 the seam where LangGraph ends and Pydantic AI begins.
 """
 import logging
+import os
 
 import httpx
 
@@ -13,10 +14,17 @@ from a2a.client import A2ACardResolver, ClientConfig, create_client
 from a2a.helpers import get_artifact_text, get_data_parts, new_text_message
 from opentelemetry.trace import SpanKind
 
+from a2a.client.errors import A2AClientError
+
 from common.report import format_sources
+from common.resilience import CircuitBreaker, with_retries
 from common.tracing import inject_context, tracer
 
 logger = logging.getLogger("research.a2a")
+
+# One breaker per process for the writer: repeated delegation failures stop
+# further attempts instead of hammering a downed agent.
+WRITER_BREAKER = CircuitBreaker("writer-agent", failure_threshold=3, cooldown_s=30)
 
 # Report writing with a reasoning model can take minutes; don't let the
 # A2A stream time out under it.
@@ -44,14 +52,32 @@ async def discover_writer(base_url: str) -> ty.AgentCard:
 async def delegate_report(
     card: ty.AgentCard, topic: str, findings: str, sources: list[dict]
 ) -> tuple[str, dict | None]:
-    """Send the writing task to the Writer Agent over A2A. Returns the report
-    text plus the structured report (citations) from the artifact's data part."""
+    """Send the writing task to the Writer Agent over A2A, with bounded
+    retries behind a circuit breaker. Returns the report text plus the
+    structured report (citations) from the artifact's data part."""
+    return await with_retries(
+        lambda: _attempt_delegation(card, topic, findings, sources),
+        name="a2a.delegate(write_report)",
+        attempts=3,
+        retry_on=(A2AClientError, httpx.HTTPError, RuntimeError),
+        breaker=WRITER_BREAKER,
+    )
+
+
+async def _attempt_delegation(
+    card: ty.AgentCard, topic: str, findings: str, sources: list[dict]
+) -> tuple[str, dict | None]:
     task_text = (
         f"Topic: {topic}\n\nFindings:\n{findings}\n\n"
         f"Sources:\n{format_sources(sources)}"
     )
+    headers = {}
+    if os.environ.get("A2A_API_KEY"):
+        # Card declares an api-key scheme (X-API-Key header); present it.
+        headers["X-API-Key"] = os.environ["A2A_API_KEY"]
     http = httpx.AsyncClient(
         timeout=DELEGATION_TIMEOUT,
+        headers=headers,
         event_hooks={"request": [_inject_trace_headers]},
     )
     client = await create_client(card, ClientConfig(httpx_client=http))
@@ -59,7 +85,8 @@ async def delegate_report(
         "A2A HANDOFF: delegating 'write_report' to %r (%d chars of findings)",
         card.name, len(task_text),
     )
-    report_chunks: list[str] = []
+    report_text = ""
+    chunks_received = 0
     structured: dict | None = None
     task_id = None
     span_cm = tracer().start_as_current_span("a2a.delegate", kind=SpanKind.CLIENT)
@@ -84,22 +111,27 @@ async def delegate_report(
                     if resp.status_update.status.state == ty.TaskState.TASK_STATE_FAILED:
                         raise RuntimeError(f"Writer Agent task {task_id} failed")
                 elif kind == "artifact_update":
-                    artifact = resp.artifact_update.artifact
-                    report_chunks.append(get_artifact_text(artifact))
-                    data_parts = get_data_parts(artifact.parts)
+                    ev = resp.artifact_update
+                    text = get_artifact_text(ev.artifact)
+                    report_text = report_text + text if ev.append else text
+                    chunks_received += 1
+                    data_parts = get_data_parts(ev.artifact.parts)
                     if data_parts:
                         structured = data_parts[0]
-                    logger.info(
-                        "A2A artifact received: %r (%d chars, %d citations)",
-                        artifact.name, len(report_chunks[-1]),
-                        len((structured or {}).get("citations", [])),
-                    )
+                    if ev.last_chunk or not ev.append:
+                        logger.info(
+                            "A2A artifact %s: %r (%d chars in %d chunk(s), "
+                            "%d citations)",
+                            "complete" if ev.last_chunk else "received",
+                            ev.artifact.name, len(report_text), chunks_received,
+                            len((structured or {}).get("citations", [])),
+                        )
     finally:
         await client.close()
         await http.aclose()
 
-    if not report_chunks:
+    if not report_text:
         raise RuntimeError("Writer Agent returned no report artifact")
-    report = "\n".join(report_chunks)
-    logger.info("A2A HANDOFF complete: report received (%d chars)", len(report))
-    return report, structured
+    logger.info("A2A HANDOFF complete: report received (%d chars)",
+                len(report_text))
+    return report_text, structured

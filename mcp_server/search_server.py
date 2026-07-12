@@ -14,7 +14,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from opentelemetry.trace import SpanKind
 
-from common import setup_logging
+from common import have_tavily, setup_logging
 from common.tracing import extract_context, setup_tracing, tracer
 
 logger = logging.getLogger("mcp.web-search")
@@ -80,7 +80,9 @@ async def web_search(query: str, max_results: int = 5) -> str:
     with tracer().start_as_current_span(
         "web_search.execute", context=parent, kind=SpanKind.SERVER
     ) as span:
-        backend = "tavily" if os.environ.get("TAVILY_API_KEY") else "mock"
+        # have_tavily() (not a raw env check) so A2A_DEMO_OFFLINE is honored
+        # even when keys leak into the environment from a parent process.
+        backend = "tavily" if have_tavily() else "mock"
         span.set_attribute("search.backend", backend)
         logger.info("web_search(%s) query=%r max_results=%d",
                     backend, query, max_results)
@@ -96,6 +98,6 @@ if __name__ == "__main__":
     setup_tracing("mcp-web-search")
     logger.info(
         "starting MCP web-search server over stdio (backend=%s)",
-        "tavily" if os.environ.get("TAVILY_API_KEY") else "mock",
+        "tavily" if have_tavily() else "mock",
     )
     mcp.run(transport="stdio")

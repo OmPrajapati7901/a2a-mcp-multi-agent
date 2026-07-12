@@ -74,8 +74,18 @@ def main() -> None:
     logger.info("mode: llm=%s search=%s",
                 llm_mode, "tavily" if have_tavily() else "mock")
 
-    writer_proc = start_writer()
+    from common.cache import SemanticCache, cache_enabled
+
+    cache = SemanticCache() if cache_enabled() else None
     t0 = time.perf_counter()
+    cached = cache.lookup(args.topic) if cache else None
+    if cached is not None:
+        # Cache hit: whole pipeline skipped — no writer, no tokens, no A2A.
+        _print_result(cached["report"], cached.get("structured_report") or {},
+                      cached, t0, cache_hit=True)
+        return
+
+    writer_proc = start_writer()
     try:
         from research_agent.agent import run_research
 
@@ -85,16 +95,28 @@ def main() -> None:
             writer_proc.terminate()
             writer_proc.wait(timeout=10)
 
-    total_s = round(time.perf_counter() - t0, 2)
-    timings = state["timings"]
+    if cache is not None:
+        cache.store(args.topic, {
+            "report": state["report"],
+            "structured_report": state.get("structured_report"),
+            "raw_results": state["raw_results"],
+            "timings": state["timings"],
+        })
 
-    structured = state.get("structured_report") or {}
+    _print_result(state["report"], state.get("structured_report") or {},
+                  state, t0, ledger=state["ledger"])
+
+
+def _print_result(report: str, structured: dict, state: dict, t0: float,
+                  ledger=None, cache_hit: bool = False) -> None:
+    total_s = round(time.perf_counter() - t0, 2)
+    timings = state.get("timings") or {}
     citations = structured.get("citations", [])
 
     print("\n" + "=" * 72)
-    print("FINAL REPORT")
+    print("FINAL REPORT" + ("  [semantic cache hit]" if cache_hit else ""))
     print("=" * 72)
-    print(state["report"])
+    print(report)
     if citations:
         print("\nSources cited:")
         for c in citations:
@@ -104,9 +126,14 @@ def main() -> None:
         f"metrics: total={total_s}s | search={timings.get('search_s')}s | "
         f"synthesis={timings.get('synthesis_s')}s | "
         f"a2a_delegation={timings.get('delegation_s')}s | "
-        f"search_results={len(state['raw_results'])} | "
+        f"search_results={len(state.get('raw_results') or [])} | "
         f"citations={len(citations)}/{int(structured.get('sources_available', 0))}"
+        + (f" | cache=hit(sim={state.get('cache_similarity')})" if cache_hit else "")
     )
+    if cache_hit:
+        print("cost:    $0 — served from semantic cache, no LLM or A2A calls")
+    else:
+        print(f"cost:    {ledger.summary()}")
 
 
 if __name__ == "__main__":
