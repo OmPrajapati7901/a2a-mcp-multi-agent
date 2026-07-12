@@ -34,6 +34,7 @@ from common import (
     setup_logging,
 )
 from common import WRITER_AGENT_URL
+from common.events import emit_event
 from common.report import parse_report, parse_sources
 from common.tracing import extract_context, setup_tracing, tracer
 from registry.client import self_register
@@ -174,6 +175,9 @@ class WriterExecutor(AgentExecutor):
             )
             logger.info("A2A artifact streamed in %d chunk(s)", chunks_sent + 1)
             await updater.complete()
+            emit_event("writer-agent", "task_completed",
+                       task_id=context.task_id, chars=len(report),
+                       citations=len(structured.citations))
             logger.info(
                 "A2A task completed: task_id=%s report=%d chars, %d/%d sources cited",
                 context.task_id, len(report),

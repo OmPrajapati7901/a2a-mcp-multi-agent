@@ -8,7 +8,9 @@ import logging
 import time
 from typing import TypedDict
 
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 import os
 
@@ -21,6 +23,7 @@ from common import (
     have_nvidia,
 )
 from common.costs import Ledger, estimate_tokens
+from common.events import emit_event
 from common.tracing import tracer
 from common.report import format_sources
 from registry.client import find_agent
@@ -38,6 +41,10 @@ MAX_REVISION_ROUNDS = 1
 
 def critic_enabled() -> bool:
     return bool(os.environ.get("A2A_CRITIC"))
+
+
+def hitl_enabled() -> bool:
+    return bool(os.environ.get("A2A_HITL"))
 
 logger = logging.getLogger("research.agent")
 
@@ -59,10 +66,12 @@ class ResearchState(TypedDict, total=False):
     report: str
     structured_report: dict | None
     timings: dict[str, float]
-    ledger: Ledger
+    ledger: dict
     critic_verdict: str
     critic_feedback: str
     revision_rounds: int
+    # NOTE: state must stay msgpack-serializable (checkpointer); the ledger
+    # travels as a plain dict and is rehydrated via Ledger.from_dict.
 
 
 def _mark(state: ResearchState, phase: str, start: float) -> dict[str, float]:
@@ -75,6 +84,7 @@ async def search_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
     logger.info("node=search: querying MCP web_search for %r", state["topic"])
     results = await mcp_web_search(state["topic"], state.get("max_results", 5))
+    emit_event("research-agent", "mcp_search_done", results=len(results))
     return {"raw_results": results, "timings": _mark(state, "search_s", t0)}
 
 
@@ -96,7 +106,7 @@ async def synthesize_node(state: ResearchState) -> ResearchState:
         logger.info("node=synthesize: distilling findings with %s (NVIDIA NIM)",
                     NVIDIA_MODEL)
         llm = ChatNVIDIA(model=NVIDIA_MODEL, max_tokens=4096)
-    ledger = state["ledger"]
+    ledger = Ledger.from_dict(state["ledger"])
     if llm is not None:
         prompt = SYNTHESIS_PROMPT.format(topic=state["topic"], results=results_text)
         msg = await llm.ainvoke(prompt)
@@ -120,13 +130,31 @@ async def synthesize_node(state: ResearchState) -> ResearchState:
             estimated=True,
         )
     logger.info("node=synthesize: %d findings lines", findings.count("- "))
-    return {"findings": findings, "timings": _mark(state, "synthesis_s", t0)}
+    return {"findings": findings, "ledger": ledger.to_dict(),
+            "timings": _mark(state, "synthesis_s", t0)}
 
 
 async def delegate_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
+    if hitl_enabled() and not state.get("critic_feedback"):
+        # Human approval gate before autonomy crosses the A2A boundary.
+        # interrupt() checkpoints the graph; run_research resumes it with
+        # the human's decision.
+        from common.audit import record_decision
+
+        decision, source = interrupt({
+            "gate": "delegate_to_writer",
+            "topic": state["topic"],
+            "findings": state["findings"],
+        })
+        record_decision(state["topic"], decision, state["findings"], source)
+        if decision != "approve":
+            raise RuntimeError(
+                f"HITL: delegation rejected by human reviewer ({source})"
+            )
+    ledger = Ledger.from_dict(state["ledger"])
     # Kill switch: stop before spending more, not after.
-    state["ledger"].check_budget("delegate to the Writer Agent")
+    ledger.check_budget("delegate to the Writer Agent")
     # Semantic routing when a registry is configured; static URL otherwise.
     writer_url = await find_agent(
         "turn research findings into a polished written report",
@@ -134,6 +162,8 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     )
     logger.info("node=delegate: discovering Writer Agent at %s", writer_url)
     card = await discover_agent(writer_url)
+    emit_event("research-agent", "a2a_handoff",
+               to=card.name, revision=state.get("revision_rounds", 0))
     feedback = state.get("critic_feedback") or None
     if feedback:
         logger.info("node=delegate: REVISION round %d with critic feedback",
@@ -173,7 +203,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
             card, need.task_id, need.context_id, task_text,
         )
     usage = (structured or {}).get("usage") or {}
-    state["ledger"].add(
+    ledger.add(
         "writer-agent",
         usage.get("input_tokens", 0), usage.get("output_tokens", 0),
         estimated=bool(usage.get("estimated")),
@@ -182,6 +212,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
         "report": report,
         "structured_report": structured,
         "raw_results": results,
+        "ledger": ledger.to_dict(),
         "timings": _mark(state, "delegation_s", t0),
     }
 
@@ -198,18 +229,22 @@ async def review_node(state: ResearchState) -> ResearchState:
     logger.info("node=review: discovering Critic Agent at %s", critic_url)
     card = await discover_agent(critic_url)
     review = await delegate_review(card, state["report"], state["findings"])
+    ledger = Ledger.from_dict(state["ledger"])
     usage = review.get("usage") or {}
-    state["ledger"].add(
+    ledger.add(
         "critic-agent",
         usage.get("input_tokens", 0), usage.get("output_tokens", 0),
         estimated=bool(usage.get("estimated")),
     )
     logger.info("node=review: critic verdict=%s", review["verdict"])
+    emit_event("critic-agent", "verdict",
+               verdict=review["verdict"], feedback=review.get("feedback", ""))
     timings = _mark(state, f"review_{state.get('revision_rounds', 0)}_s", t0)
     return {
         "critic_verdict": review["verdict"],
         "critic_feedback": review.get("feedback", ""),
         "revision_rounds": state.get("revision_rounds", 0) + 1,
+        "ledger": ledger.to_dict(),
         "timings": timings,
     }
 
@@ -241,18 +276,48 @@ def build_graph():
     g.add_edge("synthesize", "delegate")
     g.add_conditional_edges("delegate", _after_delegate, ["review", END])
     g.add_conditional_edges("review", _after_review, ["delegate", END])
-    return g.compile()
+    # Checkpointer enables interrupt()/resume for the HITL gate.
+    return g.compile(checkpointer=InMemorySaver())
+
+
+def _prompt_human(payload: dict) -> tuple[str, str]:
+    """Ask the operator to approve/reject on stdin; auto-approve (audited)
+    when no interactive stdin is available."""
+    import sys
+
+    print(
+        f"\n--- HUMAN APPROVAL REQUIRED ---\n"
+        f"gate:  {payload.get('gate')}\n"
+        f"topic: {payload.get('topic')}\n"
+        f"findings:\n{payload.get('findings')}\n"
+        f"approve delegation? [approve/reject] > ",
+        file=sys.stderr, end="", flush=True,
+    )
+    line = sys.stdin.readline()
+    if not line:
+        logger.warning("HITL: no interactive stdin — auto-approving (audited)")
+        return "approve", "auto-noninteractive"
+    decision = line.strip().lower()
+    decision = "approve" if decision in ("approve", "a", "yes", "y") else "reject"
+    return decision, "interactive"
 
 
 async def run_research(topic: str, max_results: int = 5) -> ResearchState:
     graph = build_graph()
     logger.info("research pipeline start: topic=%r", topic)
+    config = {"configurable": {"thread_id": f"run-{time.time_ns()}"}}
     with tracer().start_as_current_span("research.pipeline") as span:
         span.set_attribute("research.topic", topic)
         final: ResearchState = await graph.ainvoke(
-            {"topic": topic, "max_results": max_results, "ledger": Ledger()}
+            {"topic": topic, "max_results": max_results,
+             "ledger": Ledger().to_dict()},
+            config,
         )
+        while final.get("__interrupt__"):
+            decision = _prompt_human(final["__interrupt__"][0].value)
+            logger.info("HITL decision: %s (%s)", *decision)
+            final = await graph.ainvoke(Command(resume=decision), config)
         span.set_attribute("research.report_chars", len(final["report"]))
     logger.info("research pipeline done: timings=%s | %s",
-                final["timings"], final["ledger"].summary())
+                final["timings"], Ledger.from_dict(final["ledger"]).summary())
     return final

@@ -13,7 +13,8 @@ REPO_ROOT = pathlib.Path(__file__).parent.parent
 TOPIC = "agent observability tools"
 
 
-def run_demo(extra_env: dict | None = None) -> subprocess.CompletedProcess:
+def run_demo(extra_env: dict | None = None,
+             stdin_text: str | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["A2A_DEMO_OFFLINE"] = "1"
     # Avoid colliding with a dev writer instance on the default port.
@@ -22,6 +23,7 @@ def run_demo(extra_env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "run_demo.py", TOPIC],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120,
+        input=stdin_text,
     )
 
 

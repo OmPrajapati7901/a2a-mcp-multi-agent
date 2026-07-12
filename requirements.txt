@@ -83,7 +83,9 @@ googleapis-common-protos==1.75.0
 [32m    #   google-api-core[39m
 [32m    #   opentelemetry-exporter-otlp-proto-http[39m
 griffelib==2.1.0
-[32m    # via pydantic-ai-slim[39m
+[32m    # via[39m
+[32m    #   openai-agents[39m
+[32m    #   pydantic-ai-slim[39m
 h11==0.16.0
 [32m    # via[39m
 [32m    #   httpcore[39m
@@ -164,13 +166,19 @@ langsmith==0.10.2
 logfire-api==4.37.0
 [32m    # via pydantic-graph[39m
 mcp==1.28.1
-[32m    # via a2a-interop-demo[39m
+[32m    # via[39m
+[32m    #   a2a-interop-demo[39m
+[32m    #   openai-agents[39m
 multidict==6.7.1
 [32m    # via[39m
 [32m    #   aiohttp[39m
 [32m    #   yarl[39m
 openai==2.45.0
-[32m    # via pydantic-ai-slim[39m
+[32m    # via[39m
+[32m    #   openai-agents[39m
+[32m    #   pydantic-ai-slim[39m
+openai-agents==0.18.2
+[32m    # via a2a-interop-demo[39m
 openinference-instrumentation==0.1.54
 [32m    # via openinference-instrumentation-langchain[39m
 openinference-instrumentation-langchain==0.1.67
@@ -269,6 +277,7 @@ pydantic==2.13.4
 [32m    #   langsmith[39m
 [32m    #   mcp[39m
 [32m    #   openai[39m
+[32m    #   openai-agents[39m
 [32m    #   pydantic-ai-slim[39m
 [32m    #   pydantic-graph[39m
 [32m    #   pydantic-settings[39m
@@ -306,6 +315,7 @@ requests==2.34.2
 [32m    #   google-api-core[39m
 [32m    #   langchain-nvidia-ai-endpoints[39m
 [32m    #   langsmith[39m
+[32m    #   openai-agents[39m
 [32m    #   opentelemetry-exporter-otlp-proto-http[39m
 [32m    #   requests-toolbelt[39m
 [32m    #   tiktoken[39m
@@ -353,6 +363,7 @@ typing-extensions==4.16.0
 [32m    #   langsmith[39m
 [32m    #   mcp[39m
 [32m    #   openai[39m
+[32m    #   openai-agents[39m
 [32m    #   opentelemetry-api[39m
 [32m    #   opentelemetry-exporter-otlp-proto-http[39m
 [32m    #   opentelemetry-sdk[39m
@@ -384,6 +395,7 @@ websockets==15.0.1
 [32m    # via[39m
 [32m    #   langgraph-sdk[39m
 [32m    #   langsmith[39m
+[32m    #   openai-agents[39m
 wrapt==2.2.2
 [32m    # via[39m
 [32m    #   aiologic[39m

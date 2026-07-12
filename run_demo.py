@@ -72,6 +72,13 @@ def start_stack() -> list[subprocess.Popen]:
     The registry URL must be in the env before agents spawn so they
     self-register."""
     procs: list[subprocess.Popen] = []
+    if os.environ.get("A2A_DASHBOARD"):
+        dash_port = os.environ.get("DASHBOARD_PORT", "9200")
+        os.environ.setdefault("A2A_DASHBOARD_URL",
+                              f"http://127.0.0.1:{dash_port}")
+        procs.append(start_service(
+            "Dashboard", "dashboard.server",
+            os.environ["A2A_DASHBOARD_URL"] + "/events"))
     if os.environ.get("A2A_REGISTRY"):
         registry_port = os.environ.get("REGISTRY_PORT", "9100")
         os.environ.setdefault("A2A_REGISTRY_URL",
@@ -133,8 +140,10 @@ def main() -> None:
             "timings": state["timings"],
         })
 
+    from common.costs import Ledger
+
     _print_result(state["report"], state.get("structured_report") or {},
-                  state, t0, ledger=state["ledger"])
+                  state, t0, ledger=Ledger.from_dict(state["ledger"]))
 
 
 def _print_result(report: str, structured: dict, state: dict, t0: float,
