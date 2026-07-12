@@ -22,6 +22,7 @@ from common import (
     have_anthropic,
     have_nvidia,
 )
+from common.bandit import BanditRouter
 from common.costs import Ledger, estimate_tokens
 from common.events import emit_event
 from common.guard import screen_results
@@ -69,6 +70,8 @@ class ResearchState(TypedDict, total=False):
     timings: dict[str, float]
     ledger: dict
     guard_report: dict
+    bandit_state: dict  # BanditRouter snapshot for msgpack serialization
+    model_tier: str  # chosen model tier for this run
     critic_verdict: str
     critic_feedback: str
     revision_rounds: int
@@ -179,6 +182,11 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     emit_event("research-agent", "a2a_handoff",
                to=card.name, revision=state.get("revision_rounds", 0))
     feedback = state.get("critic_feedback") or None
+    # Bandit: choose a model tier for the writer.
+    bandit = BanditRouter()
+    bandit._load()  # restore from persistence
+    chosen_tier = bandit.choose()
+    emit_event("research-agent", "bandit_choose", tier=chosen_tier)
     if feedback:
         logger.info("node=delegate: REVISION round %d with critic feedback",
                     state.get("revision_rounds", 0))
@@ -186,6 +194,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     try:
         report, structured = await delegate_report(
             card, state["topic"], findings, results, feedback=feedback,
+            model_tier=chosen_tier,
         )
     except InputRequiredError as need:
         # The writer paused the task asking for more input — negotiate:
@@ -227,6 +236,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
         "structured_report": structured,
         "raw_results": results,
         "ledger": ledger.to_dict(),
+        "model_tier": chosen_tier,
         "timings": _mark(state, "delegation_s", t0),
     }
 
@@ -253,6 +263,18 @@ async def review_node(state: ResearchState) -> ResearchState:
     logger.info("node=review: critic verdict=%s", review["verdict"])
     emit_event("critic-agent", "verdict",
                verdict=review["verdict"], feedback=review.get("feedback", ""))
+
+    # Bandit: record reward based on critic verdict.
+    # "pass" → 1.0, "revise" → 0.3 (partial credit — report was usable).
+    tier = state.get("model_tier", "glm-5.2")
+    reward = 1.0 if review["verdict"] == "pass" else 0.3
+    bandit = BanditRouter()
+    bandit._load()
+    # Cost estimate: $0.02 for strong tier, $0.005 for cheap tier.
+    cost = 0.02 if "mini" not in tier else 0.005
+    bandit.record(tier, reward, cost)
+    emit_event("research-agent", "bandit_record",
+               tier=tier, reward=reward, cost=cost, verdict=review["verdict"])
     timings = _mark(state, f"review_{state.get('revision_rounds', 0)}_s", t0)
     return {
         "critic_verdict": review["verdict"],
