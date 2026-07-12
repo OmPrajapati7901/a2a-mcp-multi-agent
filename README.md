@@ -2,34 +2,36 @@
 
 [![ci](https://github.com/OmPrajapati7901/a2a-mcp-multi-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/OmPrajapati7901/a2a-mcp-multi-agent/actions/workflows/ci.yml)
 
-Two agents on **different frameworks** — a LangGraph Research Agent and a
-Pydantic AI Writer Agent — that discover each other and delegate work over the
-**A2A (Agent2Agent) protocol**, with **MCP** used for tool access. Traced,
-evaluated, tested in CI, and measured.
+Three agents on **three different frameworks** — LangGraph, Pydantic AI, and
+the OpenAI Agents SDK — discovering each other through a **semantic agent
+registry** and delegating work over the **A2A (Agent2Agent) protocol**, with
+**MCP** for tool access. Traced end-to-end, evaluated, chaos-tested,
+cost-metered, and CI-gated.
 
 ```
-User
-  │
-  ▼
-Research Agent (LangGraph)
-  │   MCP (stdio) → web_search tool (Tavily, or mock offline)
-  │
-  │   A2A: discovers Writer Agent via /.well-known/agent-card.json
-  │   A2A: delegates task → "write report from findings" (+ numbered sources)
-  ▼
-Writer Agent (Pydantic AI, A2A server on :9001)
-  │   returns ~300-word report with [S#] citations
-  │   as an A2A artifact: text part + structured JSON data part
-  ▼
-Research Agent → final report + machine-readable citations to user
+User ──▶ run_demo.py
+              │
+              ▼
+      Research Agent (LangGraph)
+        │  MCP (stdio) → web_search (Tavily / mock)
+        │  [HITL approval gate, budget kill switch]
+        │
+        │  registry: "who can write a report?" ──▶ Agent Registry (:9100)
+        │  A2A: delegate write_report ─────────▶ Writer Agent (Pydantic AI, :9001)
+        │    ↔ multi-turn negotiation               │ streams report chunks
+        │      (TASK_STATE_INPUT_REQUIRED)          │ + citations data part
+        │                                           ▼
+        │  A2A: delegate review_report ────────▶ Critic Agent (OpenAI Agents SDK, :9002)
+        │    ⟲ bounded reflection loop             │ verdict: approve / revise+feedback
+        ▼                                           ▼
+      report + citations + per-agent cost      live SSE dashboard (:9200)
 ```
 
-The two protocols draw two different boundaries on purpose: **MCP is the
-agent→tool seam** (the Research Agent doesn't know or care how search is
-implemented), and **A2A is the agent→agent seam** (the Research Agent knows
-only the Writer's published Agent Card — name, skills, transport — not that
-it's Pydantic AI under the hood). Either side can be swapped without touching
-the other.
+Two protocols draw two different boundaries on purpose: **MCP is the
+agent→tool seam**, **A2A is the agent→agent seam**. Every agent publishes an
+Agent Card, self-registers with the registry, and is discovered by
+*capability description* (embedding similarity in real mode, token overlap
+offline) — no hardcoded topology.
 
 ## Quickstart
 
@@ -40,150 +42,123 @@ uv sync
 uv run python run_demo.py "Summarize recent developments in agent observability tools"
 ```
 
-`run_demo.py` boots the Writer Agent's A2A server, runs the research pipeline,
-prints the cited report and per-phase latency metrics, and shuts the server
-down. Or with Docker: `docker compose run --rm demo`.
+Everything is opt-in via env vars (all combinable, all with offline fallbacks):
 
-### Modes
+| Env var | Effect |
+|---|---|
+| `A2A_CRITIC=1` | boot the Critic Agent; reflection loop (revise ≤1 round) |
+| `A2A_REGISTRY=1` | boot the registry; semantic capability routing |
+| `A2A_DASHBOARD=1` | boot the live dashboard at http://127.0.0.1:9200 |
+| `A2A_HITL=1` | human approval on stdin before delegation (audited JSONL) |
+| `A2A_MIN_FINDINGS=5` | writer negotiates for more input (multi-turn A2A) |
+| `A2A_BUDGET_TOKENS=N` | abort before the next delegation once N tokens spent |
+| `A2A_CACHE=1` | semantic cache — repeat topics cost $0 and skip all agents |
+| `A2A_API_KEY=...` | API-key auth on A2A calls, declared in the Agent Card |
+| `A2A_DEMO_OFFLINE=1` | force deterministic zero-credential mode (what CI runs) |
 
-Keys are read from a gitignored `.env` at the repo root (or the environment).
-`A2A_DEMO_OFFLINE=1` forces the deterministic zero-credential mode even when
-keys exist — that's what CI runs.
-
-| Env var | Set | Unset |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Both agents use Claude (`claude-opus-4-8`) | fall through ↓ |
-| `NVIDIA_API_KEY` | Both agents use `z-ai/glm-5.2` via NVIDIA NIM (OpenAI-compatible endpoint) | Deterministic offline models (same agent code paths) |
-| `TAVILY_API_KEY` | Real web search via Tavily | Canned mock results |
-
-The LLM seam shows the interop story twice over: the Research Agent reaches
-the model through LangChain (`ChatAnthropic` / `ChatNVIDIA`), the Writer
-through Pydantic AI (`anthropic:` provider / `OpenAIChatModel` pointed at
-NIM's base URL) — and offline mode swaps in a deterministic `FunctionModel`
-so the full protocol pipeline runs with zero credentials.
+LLM keys (gitignored `.env`): `ANTHROPIC_API_KEY` → Claude;
+`NVIDIA_API_KEY` → GLM-5.2 via NIM (all three frameworks reach it three
+different ways: `ChatNVIDIA`, Pydantic AI `OpenAIChatModel`, OpenAI Agents
+SDK `AsyncOpenAI`); neither → deterministic offline models, same code paths.
+`TAVILY_API_KEY` → real web search.
 
 ## Measured results
 
-From `uv run python -m evals.run_evals` (per-run JSON in `evals/results/`):
+From `uv run python -m evals.run_evals` (raw JSON in `evals/results/`):
 
-**Offline mode — 21 runs (3 topics × 7), deterministic:**
+**Offline — 21 runs:** 100% delegation success, p50 0.27s, 100% citation
+coverage.
 
-| metric | value |
-|---|---|
-| delegation success rate | **100%** (21/21) |
-| latency p50 / p95 | 0.27s / 0.28s |
-| citation coverage | 100% |
+**Real mode (GLM-5.2 + live Tavily), 6 judged runs:** 83% success (one
+transient upstream failure — now absorbed by the retry layer built in
+Phase 2), p50 38s, 263 mean words, 92% citation coverage, LLM-judge 5/5/5.
 
-**Real mode — GLM-5.2 via NVIDIA NIM + live Tavily search, 6 runs, LLM-judged:**
+**Full three-agent mesh (real mode):** 60.5s end-to-end; per-agent cost
+attribution `research=1866tok writer=1032tok critic=835tok | $0.0034/run`;
+registry routing scores 0.55–0.60 (NIM embeddings); 5/5 sources cited.
 
-| metric | value |
-|---|---|
-| delegation success rate | 83% (5/6 — one transient upstream API failure; retries are Phase 2) |
-| latency p50 / p95 | 38.1s / 49.5s (reasoning model) |
-| mean report length | 263 words (100% within 120–500 bounds) |
-| citation coverage | 92% of sources cited inline |
-| LLM-judge (faithfulness / completeness / writing) | 5.0 / 5.0 / 5.0 |
+CI gates on the offline eval: 100% success and 100% citation coverage or the
+build fails.
 
-The eval harness always computes the deterministic metrics; pass `--judge` to
-add LLM-as-judge scoring. CI gates on the offline run: 100% success and 100%
-citation coverage required, or the build fails.
+## Production behaviors (each exercised by a test)
 
-## Observability: one trace, three services, two protocols
+- **Retries + circuit breaker** on every A2A delegation (backoff+jitter ×3;
+  breaker opens after 3 consecutive failures). Chaos-injected via
+  `A2A_CHAOS_FAIL_N` — see [FAILURE_MODES.md](FAILURE_MODES.md) for the
+  full failure-mode table with observed traces.
+- **Multi-turn A2A negotiation**: the writer pauses a task with
+  `TASK_STATE_INPUT_REQUIRED` when findings are too thin; the research agent
+  searches again and resumes the *same task* (verified by task id).
+- **Streaming**: report chunks stream over A2A artifact updates as the model
+  generates; the structured citations+usage data part rides the last chunk.
+- **Cost controls**: per-agent token/cost ledger (writer/critic usage flows
+  back over A2A data parts); `A2A_BUDGET_TOKENS` stops *before* the next
+  handoff, not after.
+- **HITL**: LangGraph `interrupt()` checkpoints the graph pre-delegation;
+  decisions (including non-interactive auto-approvals) land in an
+  append-only audit log with a findings hash.
+- **AuthN**: Agent Card publicly declares an `X-API-Key` scheme; middleware
+  401s unauthenticated RPCs.
 
-With tracing enabled, a single distributed trace spans the whole pipeline —
-the W3C `traceparent` is propagated across the **MCP boundary** in the spawn
-environment and across the **A2A boundary** in message metadata (and HTTP
-headers):
+## Observability: one trace, five services, two protocols
 
-```
-research-agent   research.pipeline
-research-agent   ├─ search → mcp.web_search          (CLIENT)
-mcp-web-search   │   └─ web_search.execute            (SERVER, other process)
-research-agent   ├─ synthesize → LLM span             (OpenInference)
-research-agent   └─ delegate → a2a.delegate           (CLIENT)
-writer-agent         └─ writer.execute_task           (SERVER, other process)
-writer-agent             └─ pydantic-ai agent run → LLM span
-```
-
-View it in [Arize Phoenix](https://phoenix.arize.com/):
+W3C `traceparent` crosses the **MCP boundary** in the spawn environment and
+the **A2A boundary** in message metadata + HTTP headers, so one distributed
+trace spans research-agent → mcp-web-search → writer-agent (→ critic-agent).
+LLM calls are auto-instrumented on all frameworks (OpenInference for
+LangChain/LangGraph, `Agent.instrument_all()` for Pydantic AI).
 
 ```bash
-uvx arize-phoenix serve                       # UI + OTLP collector on :6006
+uvx arize-phoenix serve   # UI + OTLP collector on :6006
 PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006 uv run python run_demo.py "your topic"
 ```
 
-`tests/test_tracing.py` asserts the three services' spans share one trace id
-on every CI run. LLM calls are auto-instrumented on both frameworks
-(OpenInference for LangChain/LangGraph, `Agent.instrument_all()` for
-Pydantic AI), so token counts and prompts land in the same trace.
-
-## Where the A2A handoff happens
-
-```
-research.a2a | A2A DISCOVERY: found agent 'Writer Agent' v1.0.0 ... skills: ['write_report']
-research.a2a | A2A HANDOFF: delegating 'write_report' to 'Writer Agent' ...
-writer.a2a   | A2A task received: task_id=... input=1038 chars
-research.a2a | A2A task status: TASK_STATE_WORKING
-research.a2a | A2A artifact received: 'report' (2227 chars, 5 citations)
-research.a2a | A2A task status: TASK_STATE_COMPLETED
-writer.a2a   | A2A task completed: ... 5/5 sources cited
-```
-
-`research_agent/a2a_client.py` resolves the card and streams the task;
-`writer_agent/a2a_server.py`'s `WriterExecutor` bridges the A2A task lifecycle
-(submitted → working → artifact → completed) to the Pydantic AI agent. The
-artifact carries both the plain-text report and a schema-validated JSON data
-part (`common/report.py`) with per-claim citations.
+`tests/test_tracing.py` asserts the single-trace property on every CI run.
+The eval gate also caught a real bug here once: an env-leak made "offline"
+subprocesses silently run real Tavily searches — documented in the commit
+history.
 
 ## Testing
 
 ```bash
-uv run pytest tests/ -q
+uv run pytest tests/ -q     # 20 tests, all offline-deterministic
 ```
 
-- `test_e2e_offline.py` — runs the real CLI as a subprocess; asserts the A2A
-  lifecycle ordering (discovery → handoff → completed) in the trace
-- `test_tracing.py` — asserts one trace id across all three services
-- `test_eval_gate.py` — runs the eval harness; fails on any delegation error
-  or citation regression
-
-All run in CI (GitHub Actions) in deterministic offline mode, plus a Docker
-image build + compose smoke test.
+e2e lifecycle ordering · single-trace assertion · eval regression gate ·
+chaos/retry/breaker · budget kill switch · auth · semantic cache · registry
+routing · reflection loop · negotiation (same-task resume) · HITL
+approve/reject+audit · dashboard. CI also builds the Docker image and runs
+the compose smoke test.
 
 ## Repo layout
 
 ```
-├── run_demo.py               # CLI: topic in → cited report out (+ metrics)
-├── common/                   # config, logging, tracing, report schema
-├── mcp_server/
-│   └── search_server.py      # MCP stdio server: web_search (Tavily or mock)
-├── research_agent/           # LangGraph
-│   ├── agent.py              # graph: search → synthesize → delegate
-│   ├── mcp_client.py         # MCP stdio client (agent→tool seam)
-│   └── a2a_client.py         # A2A discovery + delegation (agent→agent seam)
-├── writer_agent/             # Pydantic AI
-│   ├── agent.py              # writer agent + offline FunctionModel fallback
-│   ├── a2a_server.py         # FastAPI + a2a-sdk routes, port 9001
-│   └── agent_card.json       # generated snapshot of the served Agent Card
+├── run_demo.py               # CLI + service orchestration (boots the stack)
+├── common/                   # config, logging, tracing, report schema,
+│                             #   costs, resilience, cache, audit, events
+├── mcp_server/search_server.py   # MCP stdio server: web_search
+├── research_agent/           # LangGraph: search → synthesize → delegate → review
+├── writer_agent/             # Pydantic AI + A2A server (:9001)
+├── critic_agent/             # OpenAI Agents SDK + A2A server (:9002)
+├── registry/                 # agent registry + semantic routing (:9100)
+├── dashboard/                # live SSE event dashboard (:9200)
 ├── evals/run_evals.py        # N-run harness: reliability + quality + judge
-├── tests/                    # e2e, tracing, eval-gate (all offline-capable)
-└── .github/workflows/ci.yml  # tests + Docker build on every push/PR
+├── tests/                    # 20 offline-deterministic tests
+└── FAILURE_MODES.md          # failure-mode table with observed traces
 ```
 
 ## Stack
 
-- Python 3.14, managed with **uv**
-- **LangGraph** (Research Agent) · **Pydantic AI** (Writer Agent)
-- **a2a-sdk 1.x** — official A2A Python SDK (protobuf-typed, JSON-RPC
-  transport, card at `/.well-known/agent-card.json`)
-- **MCP Python SDK** (FastMCP over stdio) + Tavily Search API
-- **OpenTelemetry + OpenInference + Arize Phoenix** for tracing
+Python 3.14 / **uv** · **LangGraph** · **Pydantic AI** · **OpenAI Agents
+SDK** · **a2a-sdk 1.x** (protobuf-typed, JSON-RPC) · **MCP SDK** (FastMCP,
+stdio) · Tavily · **OpenTelemetry + OpenInference + Arize Phoenix** ·
+FastAPI · Docker + GitHub Actions
 
-## Next steps (Phase 2+)
+## Next steps
 
-- Retries/backoff + circuit breaker on the A2A call (the measured 1-in-6
-  real-mode transient failure is exactly why), chaos tests
-- Multi-turn negotiation via A2A `TASK_STATE_INPUT_REQUIRED`
-- Cost ledger per agent + budget kill switch; semantic cache
-- Auth on A2A calls (Agent Card `security_schemes`)
-- Third agent (critic/reflection loop) on a third framework
+- A2A conformance/fuzzing test kit (lifecycle-order violations, malformed
+  protos, mid-stream disconnects) run against public A2A implementations
+- Indirect prompt-injection red-team at the MCP boundary with measured
+  attack-success-rate before/after defenses
+- Cost-quality bandit router across cheap/strong models using judge scores
+- Polyglot mesh: a writer in TypeScript (a2a-js) on the same registry

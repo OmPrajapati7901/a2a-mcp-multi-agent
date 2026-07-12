@@ -192,8 +192,12 @@ class WriterExecutor(AgentExecutor):
 def build_app() -> FastAPI:
     card = build_agent_card()
 
-    card_path = pathlib.Path(__file__).parent / "agent_card.json"
-    card_path.write_text(json.dumps(MessageToDict(card), indent=2) + "\n")
+    # Refresh the committed card snapshot only when running the canonical
+    # config (default port 9001). Tests bind random ports and must not churn
+    # the tracked file.
+    if WRITER_AGENT_PORT == 9001 and not os.environ.get("A2A_API_KEY"):
+        card_path = pathlib.Path(__file__).parent / "agent_card.json"
+        card_path.write_text(json.dumps(MessageToDict(card), indent=2) + "\n")
 
     handler = DefaultRequestHandler(
         agent_executor=WriterExecutor(),
