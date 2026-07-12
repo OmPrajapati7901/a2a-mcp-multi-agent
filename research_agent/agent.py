@@ -22,8 +22,11 @@ from common import (
 )
 from common.costs import Ledger, estimate_tokens
 from common.tracing import tracer
+from common.report import format_sources
 from registry.client import find_agent
 from research_agent.a2a_client import (
+    InputRequiredError,
+    continue_task,
     delegate_report,
     delegate_review,
     discover_agent,
@@ -135,10 +138,40 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     if feedback:
         logger.info("node=delegate: REVISION round %d with critic feedback",
                     state.get("revision_rounds", 0))
-    report, structured = await delegate_report(
-        card, state["topic"], state["findings"], state["raw_results"],
-        feedback=feedback,
-    )
+    findings, results = state["findings"], state["raw_results"]
+    try:
+        report, structured = await delegate_report(
+            card, state["topic"], findings, results, feedback=feedback,
+        )
+    except InputRequiredError as need:
+        # The writer paused the task asking for more input — negotiate:
+        # search again, merge anything new, and resume the SAME task.
+        logger.info("node=delegate: NEGOTIATION — writer asked: %s "
+                    "(task_id=%r ctx=%r)",
+                    need.request, need.task_id, need.context_id)
+        extra = await mcp_web_search(
+            f"{state['topic']} additional developments",
+            state.get("max_results", 5) + 3,
+        )
+        known = {r["url"] for r in results}
+        fresh = [r for r in extra if r["url"] not in known]
+        results = results + fresh
+        if fresh:
+            findings += "\n" + "\n".join(
+                f"- {r['content']} [S{i}]"
+                for i, r in enumerate(fresh, len(known) + 1)
+            )
+            note = f"Added {len(fresh)} more finding(s) from a follow-up search."
+        else:
+            note = ("A follow-up search surfaced no new sources; these "
+                    "findings are complete — please proceed.")
+        task_text = (
+            f"Topic: {state['topic']}\n\nFindings:\n{findings}\n\n"
+            f"Sources:\n{format_sources(results)}\n\n{note}"
+        )
+        report, structured = await continue_task(
+            card, need.task_id, need.context_id, task_text,
+        )
     usage = (structured or {}).get("usage") or {}
     state["ledger"].add(
         "writer-agent",
@@ -148,6 +181,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
     return {
         "report": report,
         "structured_report": structured,
+        "raw_results": results,
         "timings": _mark(state, "delegation_s", t0),
     }
 
