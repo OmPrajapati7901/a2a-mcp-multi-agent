@@ -17,6 +17,7 @@ from common import (
     have_anthropic,
     have_nvidia,
 )
+from common.costs import Ledger, estimate_tokens
 from common.tracing import tracer
 from research_agent.a2a_client import delegate_report, discover_writer
 from research_agent.mcp_client import mcp_web_search
@@ -41,6 +42,7 @@ class ResearchState(TypedDict, total=False):
     report: str
     structured_report: dict | None
     timings: dict[str, float]
+    ledger: Ledger
 
 
 def _mark(state: ResearchState, phase: str, start: float) -> dict[str, float]:
@@ -74,16 +76,28 @@ async def synthesize_node(state: ResearchState) -> ResearchState:
         logger.info("node=synthesize: distilling findings with %s (NVIDIA NIM)",
                     NVIDIA_MODEL)
         llm = ChatNVIDIA(model=NVIDIA_MODEL, max_tokens=4096)
+    ledger = state["ledger"]
     if llm is not None:
-        msg = await llm.ainvoke(
-            SYNTHESIS_PROMPT.format(topic=state["topic"], results=results_text)
-        )
+        prompt = SYNTHESIS_PROMPT.format(topic=state["topic"], results=results_text)
+        msg = await llm.ainvoke(prompt)
         findings = str(msg.text)
+        usage = getattr(msg, "usage_metadata", None) or {}
+        ledger.add(
+            "research-agent",
+            usage.get("input_tokens") or estimate_tokens(prompt),
+            usage.get("output_tokens") or estimate_tokens(findings),
+            estimated=not usage,
+        )
     else:
         logger.info("node=synthesize: offline mode — formatting results as findings")
         findings = "\n".join(
             f"- {r['content']} [S{i}]"
             for i, r in enumerate(state["raw_results"], 1)
+        )
+        ledger.add(
+            "research-agent",
+            estimate_tokens(results_text), estimate_tokens(findings),
+            estimated=True,
         )
     logger.info("node=synthesize: %d findings lines", findings.count("- "))
     return {"findings": findings, "timings": _mark(state, "synthesis_s", t0)}
@@ -91,10 +105,18 @@ async def synthesize_node(state: ResearchState) -> ResearchState:
 
 async def delegate_node(state: ResearchState) -> ResearchState:
     t0 = time.perf_counter()
+    # Kill switch: stop before spending more, not after.
+    state["ledger"].check_budget("delegate to the Writer Agent")
     logger.info("node=delegate: discovering Writer Agent at %s", WRITER_AGENT_URL)
     card = await discover_writer(WRITER_AGENT_URL)
     report, structured = await delegate_report(
         card, state["topic"], state["findings"], state["raw_results"]
+    )
+    usage = (structured or {}).get("usage") or {}
+    state["ledger"].add(
+        "writer-agent",
+        usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+        estimated=bool(usage.get("estimated")),
     )
     return {
         "report": report,
@@ -121,8 +143,9 @@ async def run_research(topic: str, max_results: int = 5) -> ResearchState:
     with tracer().start_as_current_span("research.pipeline") as span:
         span.set_attribute("research.topic", topic)
         final: ResearchState = await graph.ainvoke(
-            {"topic": topic, "max_results": max_results}
+            {"topic": topic, "max_results": max_results, "ledger": Ledger()}
         )
         span.set_attribute("research.report_chars", len(final["report"]))
-    logger.info("research pipeline done: timings=%s", final["timings"])
+    logger.info("research pipeline done: timings=%s | %s",
+                final["timings"], final["ledger"].summary())
     return final

@@ -86,10 +86,16 @@ def build_writer_agent() -> Agent:
 _agent: Agent | None = None
 
 
-async def write_report(task_text: str) -> str:
-    """Entry point used by the A2A executor: findings text in, report out."""
+async def write_report(task_text: str) -> tuple[str, dict]:
+    """Entry point used by the A2A executor: findings text in, report out,
+    plus this agent's token usage so the caller can attribute cost."""
     global _agent
     if _agent is None:
         _agent = build_writer_agent()
     result = await _agent.run(task_text)
-    return result.output
+    usage = {
+        "input_tokens": result.usage.input_tokens or 0,
+        "output_tokens": result.usage.output_tokens or 0,
+        "estimated": not have_anthropic() and not have_nvidia(),
+    }
+    return result.output, usage

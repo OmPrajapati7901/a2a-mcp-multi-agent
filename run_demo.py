@@ -107,6 +107,7 @@ def main() -> None:
         f"search_results={len(state['raw_results'])} | "
         f"citations={len(citations)}/{int(structured.get('sources_available', 0))}"
     )
+    print(f"cost:    {state['ledger'].summary()}")
 
 
 if __name__ == "__main__":

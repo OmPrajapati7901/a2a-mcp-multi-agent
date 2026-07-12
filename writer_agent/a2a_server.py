@@ -109,7 +109,7 @@ class WriterExecutor(AgentExecutor):
                 context.task_id, context.context_id, len(task_text),
             )
             try:
-                report = await write_report(task_text)
+                report, usage = await write_report(task_text)
             except Exception:
                 logger.exception("writer failed for task %s", context.task_id)
                 await updater.failed()
@@ -118,7 +118,10 @@ class WriterExecutor(AgentExecutor):
             structured = parse_report(report, parse_sources(task_text))
             span.set_attribute("report.citations", len(structured.citations))
             await updater.add_artifact(
-                [ty.Part(text=report), new_data_part(structured.model_dump())],
+                [
+                    ty.Part(text=report),
+                    new_data_part(structured.model_dump() | {"usage": usage}),
+                ],
                 name="report",
             )
             await updater.complete()
