@@ -38,11 +38,13 @@ def _offline_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRespo
     """Deterministic stand-in model: composes a structured report from the
     findings bullets in the prompt, without calling any LLM.
 
-    Citations are derived from the well-formed `[S#] title — url` source
-    block in the prompt (which the guard never modifies — it only screens
-    result *content*), then woven one-per-bullet so inline `[S#]` markers
-    are always present regardless of how the synthesis bullets were shaped
-    or whether the injection guard wrapped their content.
+    Each bullet keeps its own trailing `[S#]` marker(s) — the synthesis
+    step's ground-truth attribution. Bullets that arrive without one are
+    tagged positionally from the well-formed `[S#] title — url` source block
+    in the prompt (the guard may redact title/content text but never alters
+    the agent-generated `[S#]` prefix), so inline citations are always
+    present regardless of how the synthesis bullets were shaped or whether
+    the injection guard wrapped their content.
     """
     prompt = ""
     for part in messages[-1].parts:
@@ -57,8 +59,6 @@ def _offline_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRespo
     # The guard's spotlighting wrapper (`<untrusted_search_result>…</…>`)
     # surrounds the prose in each bullet. Extract the prose *from inside*
     # the wrapper (rather than deleting the wrapper and losing everything).
-    # Also strip any trailing [S#] tag the synthesis bullet already carries —
-    # we re-tag from the sources block below for reliable citations.
     _UNWRAP = re.compile(
         r"<untrusted_search_result>"
         r"(?:\([^)]*\)\s*)?"   # optional "(…instructions…) " preamble
@@ -67,25 +67,29 @@ def _offline_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRespo
         re.DOTALL,
     )
 
-    def _clean(b: str) -> str:
+    def _clean(b: str) -> tuple[str, str]:
+        # The bullet's own trailing [S#] marker(s) sit *outside* the wrapper
+        # and are the synthesis step's ground-truth attribution — keep them.
+        tag_match = re.search(r"((?:\s*\[S\d+\])+)\s*$", b)
+        tags = re.sub(r"\s+", "", tag_match.group(1)) if tag_match else ""
         # If the bullet contains a spotlighting wrapper, pull out the prose.
         m = _UNWRAP.search(b)
         if m:
             b = m.group(1)
-        # Drop any trailing [S#] so we can re-tag cleanly below.
-        b = re.sub(r"\s*\[S\d+\]\s*$", "", b).strip()
-        return re.sub(r"\s+", " ", b)
+        b = re.sub(r"(?:\s*\[S\d+\])+\s*$", "", b).strip()
+        return re.sub(r"\s+", " ", b), tags
 
-    cleaned = [_clean(b) for b in bullets if _clean(b)]
+    cleaned = [ct for b in bullets if (ct := _clean(b))[0]]
 
-    if cleaned and source_ids:
-        # Pair each bullet with its matching source by position.
+    if cleaned:
+        # Keep each bullet's own attribution; tag positionally from the
+        # sources block only when a bullet arrived without one.
         body = " ".join(
-            f"{b} [S{source_ids[i % len(source_ids)]}]"
-            for i, b in enumerate(cleaned)
+            f"{b} {tags}" if tags else (
+                f"{b} [S{source_ids[i % len(source_ids)]}]" if source_ids else b
+            )
+            for i, (b, tags) in enumerate(cleaned)
         )
-    elif cleaned:
-        body = " ".join(cleaned)
     else:
         body = prompt[:600]
     n_threads = len(bullets) or len(source_ids) or "several"

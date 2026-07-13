@@ -137,8 +137,11 @@ async def synthesize_node(state: ResearchState) -> ResearchState:
         )
     else:
         logger.info("node=synthesize: offline mode — formatting results as findings")
+        # Bullets must stay single-line: the offline writer extracts them with
+        # a `^- ` regex, so newlines inside result content would split a
+        # bullet and detach its [S#] marker.
         findings = "\n".join(
-            f"- {r['content']} [S{i}]"
+            f"- {' '.join(r['content'].split())} [S{i}]"
             for i, r in enumerate(state["raw_results"], 1)
         )
         ledger.add(
@@ -211,7 +214,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
         results = results + fresh
         if fresh:
             findings += "\n" + "\n".join(
-                f"- {r['content']} [S{i}]"
+                f"- {' '.join(r['content'].split())} [S{i}]"
                 for i, r in enumerate(fresh, len(known) + 1)
             )
             note = f"Added {len(fresh)} more finding(s) from a follow-up search."
