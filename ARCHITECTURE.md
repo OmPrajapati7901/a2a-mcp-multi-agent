@@ -545,12 +545,12 @@ docker compose run --rm demo
 - **Card snapshot churn guard.** The writer rewrites `agent_card.json` *only*
   on the canonical config (default port 9001, no `A2A_API_KEY`). Other configs
   (tests, custom ports) intentionally do not touch the committed file.
-- **Test suite note.** As of this writing, `tests/test_eval_gate.py` and
-  `tests/test_phase3.py::test_registry_routes_and_critic_reflects` have two
-  failing assertions (citation coverage = 0 in offline eval, and the critic
-  revise-loop in offline mode not reaching a final `approve`). These are
-  pre-existing on the branch and predate the Phase-4 work; **verify against
-  `main`** before treating them as regressions.
+- **Guard ↔ offline-writer coupling.** The offline pipeline is line-oriented:
+  synthesis emits one `- …` bullet per line and the offline writer extracts
+  them with a `^- ` regex. The guard's `wrap_untrusted()` therefore emits a
+  **single-line** wrapper — reintroducing newlines around the wrapped content
+  would split bullets across lines and silently zero out citation coverage
+  (this exact regression was fixed in Phase 4; see `tests/test_eval_gate.py`).
 - **Offline token usage is estimated.** `estimate_tokens` is ~4 chars/token
   and flagged `estimated=True` in the ledger; real usage comes from the model
   SDK. Cost numbers in offline mode are order-of-magnitude, not exact.
