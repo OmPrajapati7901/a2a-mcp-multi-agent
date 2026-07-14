@@ -67,10 +67,6 @@ async def discover_agent(base_url: str) -> ty.AgentCard:
     return card
 
 
-# Backwards-compatible alias.
-discover_writer = discover_agent
-
-
 async def delegate_report(
     card: ty.AgentCard, topic: str, findings: str, sources: list[dict],
     feedback: str | None = None, model_tier: str | None = None,

@@ -14,11 +14,13 @@ Usage:
 
 Environment:
     A2A_BANDIT_EPSILON  — exploration rate (default 0.15)
-    A2A_BANDIT_DB       — sqlite path (default: in-memory)
+    A2A_BANDIT_DB       — sqlite path (default: .cache/bandit.db, or
+                          ":memory:" for a throwaway router in tests)
 """
 import json
 import logging
 import os
+import pathlib
 import random
 import sqlite3
 import time
@@ -41,6 +43,13 @@ DEFAULT_ARMS: list[dict] = [
         "tier": "cheap",
     },
 ]
+
+
+def _default_db_path() -> pathlib.Path:
+    """Same directory convention as the semantic cache."""
+    root = pathlib.Path(os.environ.get("A2A_CACHE_DIR", ".cache"))
+    root.mkdir(exist_ok=True)
+    return root / "bandit.db"
 
 
 @dataclass
@@ -85,8 +94,11 @@ class BanditRouter:
         self.arms_spec = arms or DEFAULT_ARMS
         self.arms: dict[str, ArmStats] = {}
 
-        # Persistence: sqlite DB or in-memory for tests.
-        self._db_path = db_path or os.environ.get("A2A_BANDIT_DB", ":memory:")
+        # Persistence: a file-backed DB by default so the bandit actually
+        # learns across pipeline runs (each graph node builds its own
+        # router); ":memory:" gives tests a throwaway instance.
+        self._db_path = (db_path or os.environ.get("A2A_BANDIT_DB")
+                         or str(_default_db_path()))
         self._conn = sqlite3.connect(self._db_path)
         self._init_db()
         self._load()
@@ -155,6 +167,18 @@ class BanditRouter:
         logger.info("bandit: recorded %s reward=%.3f cost=$%.4f → "
                      "avg_reward=%.3f (pulls=%d)",
                      arm_name, reward, cost, arm.avg_reward, arm.pulls)
+
+    def estimate_cost(self, arm_name: str, input_tokens: int,
+                      output_tokens: int) -> float:
+        """Dollar cost of one pull, from the arm's $/MTok spec and the
+        actual token usage of the call it routed."""
+        arm = self.arms.get(arm_name)
+        if arm is None:
+            return 0.0
+        return round(
+            (input_tokens * arm.cost_in + output_tokens * arm.cost_out)
+            / 1_000_000, 6,
+        )
 
     def frontier(self) -> list[dict]:
         """Return cost-quality frontier data for plotting."""

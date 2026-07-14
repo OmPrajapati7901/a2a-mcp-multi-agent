@@ -11,9 +11,16 @@ import os
 
 logger = logging.getLogger("costs")
 
-# $ per million tokens; override for your provider's pricing.
-PRICE_IN_PER_MTOK = float(os.environ.get("A2A_PRICE_IN_PER_MTOK", "0.60"))
-PRICE_OUT_PER_MTOK = float(os.environ.get("A2A_PRICE_OUT_PER_MTOK", "2.20"))
+
+def _price_in_per_mtok() -> float:
+    """$ per million input tokens; override for your provider's pricing.
+    Read at call time (like every other knob) so env overrides in tests
+    and long-lived processes take effect."""
+    return float(os.environ.get("A2A_PRICE_IN_PER_MTOK", "0.60"))
+
+
+def _price_out_per_mtok() -> float:
+    return float(os.environ.get("A2A_PRICE_OUT_PER_MTOK", "2.20"))
 
 
 class BudgetExceededError(RuntimeError):
@@ -59,8 +66,9 @@ class Ledger:
         return sum(e["input"] + e["output"] for e in self.by_agent.values())
 
     def cost_usd(self) -> float:
+        price_in, price_out = _price_in_per_mtok(), _price_out_per_mtok()
         cost = sum(
-            e["input"] * PRICE_IN_PER_MTOK + e["output"] * PRICE_OUT_PER_MTOK
+            e["input"] * price_in + e["output"] * price_out
             for e in self.by_agent.values()
         ) / 1_000_000
         return round(cost, 6)

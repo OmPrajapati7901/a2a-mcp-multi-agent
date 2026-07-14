@@ -11,8 +11,6 @@ Usage:
 import argparse
 import json
 import pathlib
-import random
-import statistics
 import sys
 
 CORPUS = pathlib.Path(__file__).parent / "corpus.jsonl"
@@ -46,8 +44,9 @@ def measure_asr(corpus: list[dict], guard_on: bool, runs: int = 1) -> dict:
     import os
     os.environ["A2A_GUARD"] = "on" if guard_on else "off"
 
-    # Re-import to pick up the env change (guard_enabled caches at call time).
-    from common.guard import neutralize, screen_results
+    # guard_enabled() reads A2A_GUARD at call time, so the toggle above
+    # takes effect immediately.
+    from common.guard import screen_results
 
     attacks = [c for c in corpus if c["type"] == "attack"]
     benigns = [c for c in corpus if c["type"] == "benign"]
@@ -62,7 +61,7 @@ def measure_asr(corpus: list[dict], guard_on: bool, runs: int = 1) -> dict:
             total += 1
             result = simulate_search_result(item["text"])
             if guard_on:
-                screened, report = screen_results([result])
+                screened, _ = screen_results([result])
                 content = screened[0]["content"]
                 # The attack survived if the original text still appears
                 # unredacted in the output.

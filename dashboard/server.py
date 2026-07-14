@@ -40,11 +40,16 @@ td { padding: 3px 10px; border-bottom: 1px solid #21262d; vertical-align: top; }
 <script>
 const log = document.getElementById("log");
 function row(e) {
+  // textContent, never innerHTML: event text (critic feedback, screened web
+  // content) is untrusted and must render inert.
   const tr = document.createElement("tr");
-  tr.innerHTML = `<td>${e.ts}</td>` +
-    `<td class="agent-${e.agent}">${e.agent}</td>` +
-    `<td class="kind">${e.kind}</td>` +
-    `<td>${JSON.stringify(e.detail)}</td>`;
+  [[e.ts, ""], [e.agent, "agent-" + e.agent], [e.kind, "kind"],
+   [JSON.stringify(e.detail), ""]].forEach(([text, cls]) => {
+    const td = document.createElement("td");
+    td.textContent = text;
+    if (cls) td.className = cls;
+    tr.appendChild(td);
+  });
   log.prepend(tr);
 }
 fetch("/events").then(r => r.json()).then(es => es.forEach(row));

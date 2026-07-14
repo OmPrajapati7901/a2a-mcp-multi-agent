@@ -7,19 +7,17 @@ single token or A2A call. Opt-in via A2A_CACHE=1 so evals stay unskewed.
 """
 import json
 import logging
-import math
 import os
 import pathlib
 import re
 import sqlite3
 import time
 
-from common import have_nvidia
+from common.embeddings import cosine, embed
 
 logger = logging.getLogger("cache")
 
 SIM_THRESHOLD = 0.90
-EMBED_MODEL = "nvidia/nv-embedqa-e5-v5"
 
 
 def cache_enabled() -> bool:
@@ -34,21 +32,6 @@ def _db_path() -> pathlib.Path:
 
 def _normalize(topic: str) -> str:
     return re.sub(r"\s+", " ", topic.lower().strip())
-
-
-def _embed(topic: str) -> list[float] | None:
-    if not have_nvidia():
-        return None
-    from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-
-    return NVIDIAEmbeddings(model=EMBED_MODEL).embed_query(topic)
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    return dot / (na * nb) if na and nb else 0.0
 
 
 class SemanticCache:
@@ -68,11 +51,11 @@ class SemanticCache:
         if not rows:
             logger.info("cache MISS for %r (cache empty)", topic)
             return None
-        query_vec = _embed(topic)
+        query_vec = embed(topic)
         best: tuple[float, str] | None = None
         for topic_norm, emb_json, payload in rows:
             if query_vec is not None and emb_json:
-                sim = _cosine(query_vec, json.loads(emb_json))
+                sim = cosine(query_vec, json.loads(emb_json))
                 if sim >= SIM_THRESHOLD and (best is None or sim > best[0]):
                     best = (sim, payload)
             elif topic_norm == _normalize(topic):
@@ -86,7 +69,7 @@ class SemanticCache:
         return json.loads(best[1]) | {"cache_similarity": round(best[0], 3)}
 
     def store(self, topic: str, payload: dict) -> None:
-        vec = _embed(topic)
+        vec = embed(topic)
         self._conn.execute(
             "INSERT INTO entries VALUES (?, ?, ?, ?)",
             (_normalize(topic), json.dumps(vec) if vec else None,

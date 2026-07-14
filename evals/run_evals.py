@@ -20,7 +20,7 @@ import re
 import statistics
 import time
 
-from common import NVIDIA_MODEL, have_anthropic, have_nvidia, setup_logging
+from common import CLAUDE_MODEL, NVIDIA_MODEL, have_anthropic, have_nvidia, setup_logging
 
 logger = logging.getLogger("evals")
 
@@ -58,7 +58,7 @@ async def _judge(findings: str, report: str) -> dict | None:
     if have_anthropic():
         from langchain_anthropic import ChatAnthropic
 
-        llm = ChatAnthropic(model="claude-opus-4-8", max_tokens=1024)
+        llm = ChatAnthropic(model=CLAUDE_MODEL, max_tokens=1024)
     else:
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
 

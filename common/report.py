@@ -12,6 +12,11 @@ from pydantic import BaseModel
 _SOURCE_LINE = re.compile(r"^\[S(\d+)\]\s+(.*?)\s+—\s+(\S+)\s*$", re.MULTILINE)
 _CITE = re.compile(r"\[S(\d+)\]")
 
+# Critic verdict contract shared across the A2A boundary: the Critic Agent
+# emits exactly these values; the Research Agent branches on them.
+VERDICT_APPROVE = "approve"
+VERDICT_REVISE = "revise"
+
 
 class Citation(BaseModel):
     sid: int
