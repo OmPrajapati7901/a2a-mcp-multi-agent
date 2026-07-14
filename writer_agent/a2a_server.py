@@ -9,7 +9,6 @@ import os
 import pathlib
 import re
 
-import uvicorn
 from fastapi import FastAPI
 from google.protobuf.json_format import MessageToDict
 from opentelemetry.trace import SpanKind
@@ -18,42 +17,26 @@ import a2a.types as ty
 from a2a.helpers import new_data_part, new_task_from_user_message, new_text_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import (
-    add_a2a_routes_to_fastapi,
-    create_agent_card_routes,
-    create_jsonrpc_routes,
-)
-from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
+from a2a.server.tasks import TaskUpdater
 from a2a.utils import TransportProtocol
 
 from common import (
     WRITER_AGENT_BIND,
     WRITER_AGENT_HOST,
     WRITER_AGENT_PORT,
-    setup_logging,
+    WRITER_AGENT_URL,
 )
-from common import WRITER_AGENT_URL
+from common.a2a_service import build_a2a_app, declare_api_key_scheme, serve
 from common.events import emit_event
 from common.report import parse_report, parse_sources
-from common.tracing import extract_context, setup_tracing, tracer
-from registry.client import self_register
+from common.tracing import extract_context, tracer
 from writer_agent.agent import write_report
 
 logger = logging.getLogger("writer.a2a")
 
 
 def build_agent_card() -> ty.AgentCard:
-    card = _base_card()
-    if os.environ.get("A2A_API_KEY"):
-        # Declare the scheme on the card so callers know how to authenticate.
-        card.security_schemes["api-key"].api_key_security_scheme.CopyFrom(
-            ty.APIKeySecurityScheme(
-                name="X-API-Key", location="header",
-                description="Static API key issued to trusted caller agents.",
-            )
-        )
-    return card
+    return declare_api_key_scheme(_base_card())
 
 
 def _base_card() -> ty.AgentCard:
@@ -199,57 +182,10 @@ def build_app() -> FastAPI:
         card_path = pathlib.Path(__file__).parent / "agent_card.json"
         card_path.write_text(json.dumps(MessageToDict(card), indent=2) + "\n")
 
-    handler = DefaultRequestHandler(
-        agent_executor=WriterExecutor(),
-        task_store=InMemoryTaskStore(),
-        agent_card=card,
-    )
-    app = FastAPI(title="Writer Agent (A2A)")
-
-    api_key = os.environ.get("A2A_API_KEY")
-    if api_key:
-        from fastapi.responses import JSONResponse
-
-        @app.middleware("http")
-        async def require_api_key(request, call_next):
-            # The Agent Card stays public — that's how callers discover the
-            # required scheme; every A2A RPC needs the key.
-            if request.url.path.startswith("/.well-known"):
-                return await call_next(request)
-            if request.headers.get("x-api-key") != api_key:
-                logger.warning("A2A AUTH: rejected request to %s (bad/missing key)",
-                               request.url.path)
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
-            return await call_next(request)
-
-    add_a2a_routes_to_fastapi(
-        app,
-        agent_card_routes=create_agent_card_routes(card),
-        jsonrpc_routes=create_jsonrpc_routes(handler, "/"),
-    )
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-        FastAPIInstrumentor.instrument_app(app)
-    except ImportError:
-        pass
-
-    @app.on_event("startup")
-    async def register() -> None:
-        import asyncio
-
-        asyncio.get_running_loop().create_task(self_register(WRITER_AGENT_URL))
-
-    return app
+    return build_a2a_app(card, WriterExecutor(),
+                         self_register_url=WRITER_AGENT_URL)
 
 
 if __name__ == "__main__":
-    setup_logging()
-    setup_tracing("writer-agent")
-    logger.info(
-        "starting Writer Agent A2A server on http://%s:%d "
-        "(card at /.well-known/agent-card.json)",
-        WRITER_AGENT_HOST, WRITER_AGENT_PORT,
-    )
-    uvicorn.run(build_app(), host=WRITER_AGENT_BIND, port=WRITER_AGENT_PORT,
-                log_level="warning")
+    serve(build_app, "writer-agent",
+          WRITER_AGENT_HOST, WRITER_AGENT_BIND, WRITER_AGENT_PORT)

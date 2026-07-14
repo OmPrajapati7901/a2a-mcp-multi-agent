@@ -109,7 +109,7 @@ Solid lines = always exercised on a normal run.*
 | **Eval harness** | `evals/run_evals.py` | N-run reliability + quality harness. Deterministic metrics always; an LLM judge scores faithfulness/completeness/writing when a key is present. CI gates on these. |
 | **Benchmarks** | `benchmarks/a2a_overhead.py` | Measures A2A JSON-RPC latency overhead vs. a direct in-process call. |
 | **Red-team** | `redteam/`, `common/guard.py` | Indirect prompt-injection defense + attack corpus + ASR (attack-success-rate) measurement harness. |
-| **Tests** | `tests/` | 47 offline-deterministic tests covering every behavior above. |
+| **Tests** | `tests/` | 51 offline-deterministic tests covering every behavior above. |
 
 ### Key non-obvious design decisions
 
@@ -120,7 +120,7 @@ Solid lines = always exercised on a normal run.*
 2. **Offline mode is a real mode, not a stub.** `A2A_DEMO_OFFLINE=1` swaps in
    deterministic `FunctionModel`s and mock search results, but the *same code
    paths* (MCP stdio round-trip, A2A JSON-RPC, tracing, streaming, retries)
-   all still execute. This is what makes the 47 tests meaningful without any
+   all still execute. This is what makes the 51 tests meaningful without any
    credentials.
 
 3. **Trace context crosses both seams.** W3C `traceparent` is injected into
@@ -403,6 +403,8 @@ off vs. on. See `SECURITY.md`.
 | `common/bandit.py` | `BanditRouter` — epsilon-greedy over model tiers; sqlite-persistent; `choose()`/`record()`/`frontier()`. |
 | `common/audit.py` | `record_decision()` — append-only HITL audit JSONL. |
 | `common/events.py` | `emit_event()` — fire-and-forget dashboard POST. |
+| `common/embeddings.py` | Shared NIM embedding helpers (`embed()`, `cosine()`) used by the semantic cache and the registry. |
+| `common/a2a_service.py` | Shared A2A server scaffolding: `build_a2a_app()` (card+RPC routes, API-key middleware, tracing, registry self-registration), `declare_api_key_scheme()`, `serve()`. |
 | `mcp_server/search_server.py` | **MCP server.** FastMCP stdio; `web_search` tool; Tavily or mock; catches traceparent from env. |
 | `research_agent/agent.py` | **Research Agent (LangGraph).** `build_graph()`, `search_node`/`synthesize_node`/`delegate_node`/`review_node`, `run_research()` with interrupt loop, `_prompt_human()`. |
 | `research_agent/mcp_client.py` | `mcp_web_search()` — spawns MCP server stdio, injects traceparent into spawn env. |
@@ -419,7 +421,7 @@ off vs. on. See `SECURITY.md`.
 | `benchmarks/a2a_overhead.py` | A2A-overhead microbenchmark (auto-boots a writer server). |
 | `redteam/corpus.jsonl` | 20 attack strings (8 categories) + 10 benign false-positive strings. |
 | `redteam/harness.py` | ASR measurement: guard-off vs guard-on, false-positive count. |
-| `tests/*.py` | 47 offline-deterministic tests (e2e, tracing, eval gate, resilience, costs, auth+cache, phase-3 behaviors, guard, bandit). |
+| `tests/*.py` | 51 offline-deterministic tests (e2e, tracing, eval gate, resilience, costs, auth+cache, phase-3 behaviors, guard, bandit). |
 | `Dockerfile`, `docker-compose.yml` | Container image + compose (writer service + demo runner). |
 | `.github/workflows/ci.yml` | **CI:** runs `uv run pytest tests/ -q` offline; builds image; `docker compose run --rm demo`. |
 | `SECURITY.md` | Threat model, defense layers, red-team results, known limitations. |
@@ -494,7 +496,7 @@ Alternatively `A2A_DEMO_TRACE_CONSOLE=1` prints spans to stderr (used by
 ### Tests
 
 ```bash
-uv run pytest tests/ -q     # 47 tests, all offline-deterministic
+uv run pytest tests/ -q     # 51 tests, all offline-deterministic
 ```
 
 ### Evals
