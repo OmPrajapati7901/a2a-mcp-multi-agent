@@ -5,14 +5,13 @@ Writer Agent). State carries the topic through to the final report, plus
 per-phase timings for the demo metrics.
 """
 import logging
+import os
 import time
 from typing import TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-
-import os
 
 from common import (
     CLAUDE_MODEL,
@@ -22,12 +21,12 @@ from common import (
     have_anthropic,
     have_nvidia,
 )
-from common.bandit import BanditRouter
+from common.bandit import DEFAULT_ARMS, BanditRouter
 from common.costs import Ledger, estimate_tokens
 from common.events import emit_event
 from common.guard import screen_results
 from common.tracing import tracer
-from common.report import format_sources
+from common.report import VERDICT_APPROVE, VERDICT_REVISE, format_sources
 from registry.client import find_agent
 from research_agent.a2a_client import (
     InputRequiredError,
@@ -72,6 +71,7 @@ class ResearchState(TypedDict, total=False):
     guard_report: dict
     bandit_state: dict  # BanditRouter snapshot for msgpack serialization
     model_tier: str  # chosen model tier for this run
+    writer_usage: dict  # writer token usage from the last delegation
     critic_verdict: str
     critic_feedback: str
     revision_rounds: int
@@ -186,9 +186,7 @@ async def delegate_node(state: ResearchState) -> ResearchState:
                to=card.name, revision=state.get("revision_rounds", 0))
     feedback = state.get("critic_feedback") or None
     # Bandit: choose a model tier for the writer.
-    bandit = BanditRouter()
-    bandit._load()  # restore from persistence
-    chosen_tier = bandit.choose()
+    chosen_tier = BanditRouter().choose()
     emit_event("research-agent", "bandit_choose", tier=chosen_tier)
     if feedback:
         logger.info("node=delegate: REVISION round %d with critic feedback",
@@ -240,6 +238,10 @@ async def delegate_node(state: ResearchState) -> ResearchState:
         "raw_results": results,
         "ledger": ledger.to_dict(),
         "model_tier": chosen_tier,
+        "writer_usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        },
         "timings": _mark(state, "delegation_s", t0),
     }
 
@@ -268,13 +270,16 @@ async def review_node(state: ResearchState) -> ResearchState:
                verdict=review["verdict"], feedback=review.get("feedback", ""))
 
     # Bandit: record reward based on critic verdict.
-    # "pass" → 1.0, "revise" → 0.3 (partial credit — report was usable).
-    tier = state.get("model_tier", "glm-5.2")
-    reward = 1.0 if review["verdict"] == "pass" else 0.3
+    # approve → 1.0, revise → 0.3 (partial credit — report was usable).
+    tier = state.get("model_tier") or DEFAULT_ARMS[0]["name"]
+    reward = 1.0 if review["verdict"] == VERDICT_APPROVE else 0.3
     bandit = BanditRouter()
-    bandit._load()
-    # Cost estimate: $0.02 for strong tier, $0.005 for cheap tier.
-    cost = 0.02 if "mini" not in tier else 0.005
+    # Cost of this pull from the arm's $/MTok spec and the writer's actual
+    # token usage for the delegation under review.
+    wusage = state.get("writer_usage") or {}
+    cost = bandit.estimate_cost(
+        tier, wusage.get("input_tokens", 0), wusage.get("output_tokens", 0),
+    )
     bandit.record(tier, reward, cost)
     emit_event("research-agent", "bandit_record",
                tier=tier, reward=reward, cost=cost, verdict=review["verdict"])
@@ -289,12 +294,12 @@ async def review_node(state: ResearchState) -> ResearchState:
 
 
 def _after_review(state: ResearchState) -> str:
-    if (state["critic_verdict"] == "revise"
+    if (state["critic_verdict"] == VERDICT_REVISE
             and state["revision_rounds"] <= MAX_REVISION_ROUNDS):
         logger.info("reflection: revising report (round %d/%d)",
                     state["revision_rounds"], MAX_REVISION_ROUNDS)
         return "delegate"
-    if state["critic_verdict"] == "revise":
+    if state["critic_verdict"] == VERDICT_REVISE:
         logger.warning("reflection: revision budget exhausted — "
                        "shipping last draft")
     return END

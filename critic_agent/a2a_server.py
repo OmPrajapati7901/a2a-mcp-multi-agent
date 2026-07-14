@@ -6,7 +6,6 @@ Run: `uv run python -m critic_agent.a2a_server` (port 9002).
 """
 import logging
 
-import uvicorn
 from fastapi import FastAPI
 from opentelemetry.trace import SpanKind
 
@@ -14,13 +13,7 @@ import a2a.types as ty
 from a2a.helpers import new_data_part, new_task_from_user_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import (
-    add_a2a_routes_to_fastapi,
-    create_agent_card_routes,
-    create_jsonrpc_routes,
-)
-from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
+from a2a.server.tasks import TaskUpdater
 from a2a.utils import TransportProtocol
 
 from common import (
@@ -28,16 +21,19 @@ from common import (
     CRITIC_AGENT_HOST,
     CRITIC_AGENT_PORT,
     CRITIC_AGENT_URL,
-    setup_logging,
 )
-from common.tracing import extract_context, setup_tracing, tracer
+from common.a2a_service import build_a2a_app, declare_api_key_scheme, serve
+from common.tracing import extract_context, tracer
 from critic_agent.agent import review_report
-from registry.client import self_register
 
 logger = logging.getLogger("critic.a2a")
 
 
 def build_agent_card() -> ty.AgentCard:
+    return declare_api_key_scheme(_base_card())
+
+
+def _base_card() -> ty.AgentCard:
     return ty.AgentCard(
         name="Critic Agent",
         description=(
@@ -105,32 +101,12 @@ class CriticExecutor(AgentExecutor):
 
 
 def build_app() -> FastAPI:
-    card = build_agent_card()
-    handler = DefaultRequestHandler(
-        agent_executor=CriticExecutor(),
-        task_store=InMemoryTaskStore(),
-        agent_card=card,
-    )
-    app = FastAPI(title="Critic Agent (A2A)")
-    add_a2a_routes_to_fastapi(
-        app,
-        agent_card_routes=create_agent_card_routes(card),
-        jsonrpc_routes=create_jsonrpc_routes(handler, "/"),
-    )
-
-    @app.on_event("startup")
-    async def register() -> None:
-        import asyncio
-
-        asyncio.get_running_loop().create_task(self_register(CRITIC_AGENT_URL))
-
-    return app
+    # Same scaffolding as the writer — including the API-key middleware, so
+    # enabling A2A_API_KEY protects every agent boundary, not just one.
+    return build_a2a_app(build_agent_card(), CriticExecutor(),
+                         self_register_url=CRITIC_AGENT_URL)
 
 
 if __name__ == "__main__":
-    setup_logging()
-    setup_tracing("critic-agent")
-    logger.info("starting Critic Agent A2A server on http://%s:%d",
-                CRITIC_AGENT_HOST, CRITIC_AGENT_PORT)
-    uvicorn.run(build_app(), host=CRITIC_AGENT_BIND, port=CRITIC_AGENT_PORT,
-                log_level="warning")
+    serve(build_app, "critic-agent",
+          CRITIC_AGENT_HOST, CRITIC_AGENT_BIND, CRITIC_AGENT_PORT)

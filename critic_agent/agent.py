@@ -12,6 +12,7 @@ import os
 import re
 
 from common import NVIDIA_BASE_URL, NVIDIA_MODEL, have_nvidia
+from common.report import VERDICT_APPROVE, VERDICT_REVISE
 
 logger = logging.getLogger("critic.agent")
 
@@ -47,8 +48,8 @@ def _offline_review(task_text: str) -> dict:
     if not lines or len(lines[0].split()) > 20:
         problems.append("start with a concise title line")
     if problems:
-        return {"verdict": "revise", "feedback": "; ".join(problems)}
-    return {"verdict": "approve", "feedback": ""}
+        return {"verdict": VERDICT_REVISE, "feedback": "; ".join(problems)}
+    return {"verdict": VERDICT_APPROVE, "feedback": ""}
 
 
 async def review_report(task_text: str) -> dict:
@@ -56,7 +57,7 @@ async def review_report(task_text: str) -> dict:
     if _force_revise():
         logger.info("critic verdict: revise (forced via A2A_CRITIC_FORCE_REVISE)")
         return {
-            "verdict": "revise",
+            "verdict": VERDICT_REVISE,
             "feedback": "tighten the introduction and cite every claim inline",
             "usage": {"input_tokens": 0, "output_tokens": 0, "estimated": True},
         }
@@ -93,10 +94,11 @@ async def review_report(task_text: str) -> dict:
             parsed = json.loads(match.group(0)) if match else {}
         except json.JSONDecodeError:
             parsed = {}
-        verdict = parsed.get("verdict", "approve")
+        verdict = parsed.get("verdict", VERDICT_APPROVE)
         usage = result.context_wrapper.usage
         review = {
-            "verdict": verdict if verdict in ("approve", "revise") else "approve",
+            "verdict": (verdict if verdict in (VERDICT_APPROVE, VERDICT_REVISE)
+                        else VERDICT_APPROVE),
             "feedback": str(parsed.get("feedback", ""))[:500],
             "usage": {
                 "input_tokens": usage.input_tokens or 0,

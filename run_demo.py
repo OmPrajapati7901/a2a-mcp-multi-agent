@@ -10,13 +10,12 @@ Usage:
 import argparse
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 import time
 
 import httpx
-
-import os
 
 from common import (
     CRITIC_AGENT_URL,

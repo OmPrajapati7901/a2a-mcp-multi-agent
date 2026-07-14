@@ -9,7 +9,7 @@ works offline too.
 Run: `uv run python -m registry.server`  (port 9100)
 """
 import logging
-import math
+import os
 import re
 
 import httpx
@@ -17,11 +17,10 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from common import have_nvidia, setup_logging
+from common import setup_logging
+from common.embeddings import cosine, embed
 
 logger = logging.getLogger("registry")
-
-import os
 
 REGISTRY_PORT = int(os.environ.get("REGISTRY_PORT", "9100"))
 
@@ -47,25 +46,13 @@ def _skill_text(card: dict) -> str:
     return " ".join(p for p in parts if p)
 
 
-def _embed(text: str) -> list[float] | None:
-    if not have_nvidia():
-        return None
-    from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-
-    return NVIDIAEmbeddings(model="nvidia/nv-embedqa-e5-v5").embed_query(text)
-
-
 def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z]+", text.lower()))
 
 
-def _score(capability: str, entry: dict) -> float:
-    query_vec = _embed(capability)
+def _score(capability: str, query_vec: list[float] | None, entry: dict) -> float:
     if query_vec is not None and entry.get("vec"):
-        dot = sum(x * y for x, y in zip(query_vec, entry["vec"]))
-        na = math.sqrt(sum(x * x for x in query_vec))
-        nb = math.sqrt(sum(x * x for x in entry["vec"]))
-        return dot / (na * nb) if na and nb else 0.0
+        return cosine(query_vec, entry["vec"])
     # Offline: Jaccard-ish token overlap against the skill text.
     q, s = _tokens(capability), _tokens(entry["skill_text"])
     return len(q & s) / len(q) if q else 0.0
@@ -82,7 +69,7 @@ async def register(req: RegisterRequest) -> dict:
         "url": req.card_url,
         "skill_text": _skill_text(card),
     }
-    entry["vec"] = _embed(entry["skill_text"])
+    entry["vec"] = embed(entry["skill_text"])
     _agents[card["name"]] = entry
     logger.info("registered agent %r (%s) — %d agent(s) total",
                 card["name"], req.card_url, len(_agents))
@@ -98,8 +85,11 @@ async def agents() -> dict:
 async def find(req: FindRequest) -> dict:
     if not _agents:
         return {"match": None}
+    # Embed the query once; _score reuses the vector for every candidate.
+    query_vec = embed(req.capability)
     scored = sorted(
-        ((name, _score(req.capability, e)) for name, e in _agents.items()),
+        ((name, _score(req.capability, query_vec, e))
+         for name, e in _agents.items()),
         key=lambda x: -x[1],
     )
     best_name, best_score = scored[0]

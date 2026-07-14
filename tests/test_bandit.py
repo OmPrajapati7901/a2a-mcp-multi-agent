@@ -93,3 +93,33 @@ class TestBanditRouter:
         cheap = router.arms["glm-5.2-mini"]
         strong = router.arms["glm-5.2"]
         assert cheap.avg_reward_per_dollar > strong.avg_reward_per_dollar
+
+    def test_estimate_cost_from_arm_spec(self, router):
+        # glm-5.2: $0.50/MTok in, $1.50/MTok out.
+        cost = router.estimate_cost("glm-5.2", 1_000_000, 1_000_000)
+        assert abs(cost - 2.0) < 1e-9
+        assert router.estimate_cost("nonexistent-model", 1000, 1000) == 0.0
+
+
+def test_pipeline_records_approve_reward(tmp_path):
+    """Regression: an approved report must earn the full 1.0 reward — the
+    critic's verdict is 'approve' (never 'pass'), and the reward comparison
+    once used the wrong literal, flattening every pull to 0.3."""
+    from tests.test_e2e_offline import run_demo
+
+    db = tmp_path / "bandit.db"
+    proc = run_demo({
+        "A2A_CRITIC": "1",
+        "A2A_BANDIT_DB": str(db),
+        "WRITER_AGENT_PORT": "9158",
+        "CRITIC_AGENT_PORT": "9159",
+    })
+    assert proc.returncode == 0, f"demo failed:\n{proc.stderr[-3000:]}"
+    assert "critic verdict: approve" in proc.stderr
+    rows = sqlite3.connect(db).execute(
+        "SELECT arm_name, reward FROM bandit_pulls"
+    ).fetchall()
+    assert rows, "bandit recorded no pulls"
+    assert any(reward == 1.0 for _, reward in rows), (
+        f"no full-credit reward recorded for the approved report: {rows}"
+    )

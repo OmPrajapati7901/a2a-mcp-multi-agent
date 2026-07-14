@@ -98,12 +98,19 @@ async def bench_a2a(port: int, runs: int) -> list[float]:
 
 
 def stats(latencies: list[float]) -> dict:
+    def pct(p: int) -> float:
+        # Interpolated percentile (same method as evals/run_evals.py); the
+        # previous nearest-rank indexing returned the max for small n.
+        if len(latencies) < 2:
+            return latencies[0]
+        return statistics.quantiles(latencies, n=100)[p - 1]
+
     return {
         "n": len(latencies),
         "mean_s": round(statistics.mean(latencies), 4),
         "median_s": round(statistics.median(latencies), 4),
-        "p95_s": round(sorted(latencies)[int(len(latencies) * 0.95)], 4),
-        "p99_s": round(sorted(latencies)[int(len(latencies) * 0.99)], 4),
+        "p95_s": round(pct(95), 4),
+        "p99_s": round(pct(99), 4),
         "min_s": round(min(latencies), 4),
         "max_s": round(max(latencies), 4),
         "stdev_s": round(statistics.stdev(latencies), 4) if len(latencies) > 1 else 0,

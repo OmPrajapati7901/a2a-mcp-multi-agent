@@ -130,7 +130,7 @@ history.
 ## Testing
 
 ```bash
-uv run pytest tests/ -q     # 47 tests, all offline-deterministic
+uv run pytest tests/ -q     # 51 tests, all offline-deterministic
 ```
 
 e2e lifecycle ordering · single-trace assertion · eval regression gate ·
@@ -158,7 +158,7 @@ smoke test.
 ├── evals/run_evals.py        # N-run harness: reliability + quality + judge
 ├── benchmarks/               # A2A protocol microbenchmark
 ├── redteam/                  # injection attack corpus + ASR harness
-├── tests/                    # 47 offline-deterministic tests
+├── tests/                    # 51 offline-deterministic tests
 ├── SECURITY.md               # threat model, defense layers, red-team results
 └── FAILURE_MODES.md          # failure-mode table with observed traces
 ```
